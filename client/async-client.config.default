@@ -1,0 +1,8 @@
+mode=warm
+host=127.0.0.1
+port=9998
+iterations=20
+size=5KB
+timeout_s=30
+result_file_enabled=false
+result_file=/opt/es1-async-results.jsonl
