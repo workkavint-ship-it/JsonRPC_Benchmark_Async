@@ -310,7 +310,7 @@ public:
         if (!_socket.SendText(request.str())) return false;
 
         const std::string ackMarker = "\"id\":" + std::to_string(requestId) + ",";
-        const std::string completionMarker = "\"method\":\"" + asyncId + "." + method + "\"";
+        const std::string completionMarker = "\"method\":\"" + asyncId + "." + method + "@" + asyncId + "\"";
         bool acknowledgement = false;
         bool completion = false;
         std::string message;
