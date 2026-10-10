@@ -93,11 +93,22 @@ namespace Plugin {
 
     void ES1BenchmarkAsync::AsyncQueue::Submit(const Job& job)
     {
-        std::lock_guard<std::mutex> lock(_lock);
-        _jobs.push_back(job);
-        if (_scheduled == false) {
-            _scheduled = true;
-            JobType::Submit();
+        bool schedule = false;
+        {
+            std::lock_guard<std::mutex> lock(_lock);
+            _jobs.push_back(job);
+            if (_scheduled == false) {
+                _scheduled = true;
+                schedule = true;
+            }
+        }
+
+        if (schedule) {
+            std::this_thread::sleep_for(std::chrono::seconds(10));
+            std::lock_guard<std::mutex> lock(_lock);
+            if (_scheduled) {
+                JobType::Submit();
+            }
         }
     }
 
