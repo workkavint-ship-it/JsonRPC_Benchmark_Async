@@ -1,4 +1,4 @@
-// Standalone client for the Thunder @async ES1 benchmark interface.
+// Standalone client for the Thunder ES1 benchmark event interface.
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
@@ -21,6 +22,8 @@
 #include <vector>
 
 namespace {
+
+std::atomic<uint64_t> g_clientSequence { 0 };
 
 std::string Trim(const std::string& value)
 {
@@ -285,32 +288,33 @@ private:
 
 class AsyncClient {
 public:
+    AsyncClient()
+        : _clientId("es1-client-" + std::to_string(static_cast<unsigned long long>(::getpid()))
+            + "-" + std::to_string(++g_clientSequence))
+    {
+    }
+
     bool Connect(const Config& config) { return _socket.Connect(config.host, config.port, config.timeoutS); }
 
-    // The completion notification is only ever delivered to a channel that
-    // explicitly registered for it first (register@<asyncId> with
-    // event=<method>, id=<asyncId>) - without that step the async method
-    // call still acks with "result": null but the completion never arrives.
     bool Call(const std::string& method, const std::string& parameters, uint64_t* elapsedUs)
     {
-        const std::string asyncId = "es1-async-" + std::to_string(++_asyncSequence);
+    const std::string event = method + "completed";
+    const std::string& clientId = _clientId;
 
-        if (!Register(method, asyncId)) return false;
+    if (!Register(event, clientId)) return false;
 
         const uint64_t requestId = ++_requestId;
-        std::string params = parameters;
-        params.insert(params.size() - 1, (params.size() == 2 ? "\"id\":\"" : ",\"id\":\"") + asyncId + "\"");
 
         std::ostringstream request;
         request << "{\"jsonrpc\":\"2.0\",\"id\":" << requestId
                 << ",\"method\":\"ES1BenchmarkAsync.1." << method
-                << "\",\"params\":" << params << "}";
+        << "\",\"params\":" << parameters << "}";
 
         const uint64_t start = NowUs();
         if (!_socket.SendText(request.str())) return false;
 
         const std::string ackMarker = "\"id\":" + std::to_string(requestId) + ",";
-        const std::string completionMarker = "\"method\":\"" + asyncId + "." + method + "@" + asyncId + "\"";
+        const std::string completionMarker = "\"method\":\"" + clientId + "." + event + "\"";
         bool acknowledgement = false;
         bool completion = false;
         std::string message;
@@ -325,8 +329,8 @@ public:
         }
         *elapsedUs = NowUs() - start;
 
-        if (!Unregister(method, asyncId)) {
-            std::cerr << "warning: unregister failed for " << method << " (" << asyncId << ")" << std::endl;
+        if (!Unregister(event, clientId)) {
+            std::cerr << "warning: unregister failed for " << event << " (" << clientId << ")" << std::endl;
         }
         return true;
     }
@@ -375,7 +379,7 @@ private:
 
     WebSocket _socket;
     uint64_t _requestId = 0;
-    uint64_t _asyncSequence = 0;
+    std::string _clientId;
 };
 
 std::string ArrayPayload(long count)

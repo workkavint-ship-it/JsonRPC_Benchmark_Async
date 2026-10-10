@@ -5,12 +5,10 @@
 #include <interfaces/IES1BenchmarkAsync.h>
 #include <interfaces/json/JES1BenchmarkAsync.h>
 
-#include <array>
-#include <atomic>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <thread>
-#include <utility>
 
 namespace WPEFramework {
 namespace Plugin {
@@ -19,15 +17,14 @@ namespace Plugin {
                              , public PluginHost::JSONRPC
                              , public Exchange::IES1BenchmarkAsync {
     public:
+        using Notification = Exchange::IES1BenchmarkAsync::INotification;
+
         ES1BenchmarkAsync(const ES1BenchmarkAsync&) = delete;
         ES1BenchmarkAsync& operator=(const ES1BenchmarkAsync&) = delete;
 
-        ES1BenchmarkAsync() = default;
+        ES1BenchmarkAsync();
         ~ES1BenchmarkAsync() override = default;
 
-        // Plugin configuration - read from ES1BenchmarkAsync.json on device.
-        // Mirrors ES1Benchmark's coldstart notify config, so the async plugin
-        // can participate in the same cold-boot-triggered benchmark workflow.
         class Config : public Core::JSON::Container {
         public:
             Config()
@@ -37,14 +34,15 @@ namespace Plugin {
                 , ThunderHost("127.0.0.1")
                 , ThunderPort(55555)
             {
-                Add(_T("notifyhost"),  &NotifyHost);
-                Add(_T("notifyport"),  &NotifyPort);
+                Add(_T("notifyhost"), &NotifyHost);
+                Add(_T("notifyport"), &NotifyPort);
                 Add(_T("thunderhost"), &ThunderHost);
                 Add(_T("thunderport"), &ThunderPort);
             }
-            Core::JSON::String    NotifyHost;
+
+            Core::JSON::String NotifyHost;
             Core::JSON::DecUInt16 NotifyPort;
-            Core::JSON::String    ThunderHost;
+            Core::JSON::String ThunderHost;
             Core::JSON::DecUInt16 ThunderPort;
         };
 
@@ -54,134 +52,101 @@ namespace Plugin {
             INTERFACE_ENTRY(Exchange::IES1BenchmarkAsync)
         END_INTERFACE_MAP
 
-        // IPlugin
         const string Initialize(PluginHost::IShell* service) override;
         void Deinitialize(PluginHost::IShell* service) override;
         string Information() const override;
 
-        // IES1BenchmarkAsync
-        Core::hresult SetString(const string& value, ISetStringCallback* const callback) override;
-        Core::hresult GetString(const uint32_t size, IGetStringCallback* const callback) override;
-        Core::hresult SetArray(const std::vector<uint8_t>& value, ISetArrayCallback* const callback) override;
-        Core::hresult GetArray(const uint32_t size, IGetArrayCallback* const callback) override;
-        Core::hresult SetMixedArray(const std::vector<MixedElement>& value, ISetMixedCallback* const callback) override;
-        Core::hresult GetMixedArray(const uint32_t count, IGetMixedCallback* const callback) override;
-        Core::hresult SetNestedObjects(const std::vector<NestedObject>& value, ISetNestedCallback* const callback) override;
-        Core::hresult GetNestedObjects(const uint32_t count, IGetNestedCallback* const callback) override;
-        Core::hresult SetUint32(const uint32_t value, ISetUint32Callback* const callback) override;
-        Core::hresult GetUint32(IGetUint32Callback* const callback) override;
-        Core::hresult SetUint64(const uint64_t value, ISetUint64Callback* const callback) override;
-        Core::hresult GetUint64(IGetUint64Callback* const callback) override;
-        Core::hresult SetBool(const bool value, ISetBoolCallback* const callback) override;
-        Core::hresult GetBool(IGetBoolCallback* const callback) override;
-        Core::hresult SetFloat(const float value, ISetFloatCallback* const callback) override;
-        Core::hresult GetFloat(IGetFloatCallback* const callback) override;
-        Core::hresult SetDouble(const double value, ISetDoubleCallback* const callback) override;
-        Core::hresult GetDouble(IGetDoubleCallback* const callback) override;
-        Core::hresult MeasureCopyCost(const uint32_t size, IMeasureCopyCallback* const callback) override;
-        Core::hresult MeasureStringResizeCost(const uint32_t size, IMeasureStringCallback* const callback) override;
-        Core::hresult MeasureMixedAssignCost(const uint32_t count, IMeasureMixedCallback* const callback) override;
-        Core::hresult MeasureNestedAssignCost(const uint32_t count, IMeasureNestedCallback* const callback) override;
+        Core::hresult Register(Notification* const notification) override;
+        Core::hresult Unregister(const Notification* notification) override;
+
+        Core::hresult SetString(const string& value) override;
+        Core::hresult GetString(const uint32_t size) override;
+        Core::hresult SetArray(const std::vector<uint8_t>& value) override;
+        Core::hresult GetArray(const uint32_t size) override;
+        Core::hresult SetMixedArray(const std::vector<MixedElement>& value) override;
+        Core::hresult GetMixedArray(const uint32_t count) override;
+        Core::hresult SetNestedObjects(const std::vector<NestedObject>& value) override;
+        Core::hresult GetNestedObjects(const uint32_t count) override;
+        Core::hresult SetUint32(const uint32_t value) override;
+        Core::hresult GetUint32() override;
+        Core::hresult SetUint64(const uint64_t value) override;
+        Core::hresult GetUint64() override;
+        Core::hresult SetBool(const bool value) override;
+        Core::hresult GetBool() override;
+        Core::hresult SetFloat(const float value) override;
+        Core::hresult GetFloat() override;
+        Core::hresult SetDouble(const double value) override;
+        Core::hresult GetDouble() override;
+        Core::hresult MeasureCopyCost(const uint32_t size) override;
+        Core::hresult MeasureStringResizeCost(const uint32_t size) override;
+        Core::hresult MeasureMixedAssignCost(const uint32_t count) override;
+        Core::hresult MeasureNestedAssignCost(const uint32_t count) override;
 
     private:
-        class CallJob {
+        using Job = std::function<void()>;
+
+        class AsyncQueue : private Core::WorkerPool::JobType<AsyncQueue&> {
         public:
-            CallJob()
-                : _job(*this)
-                , _pending(nullptr)
-                , _task()
-            {
-            }
-            CallJob(const CallJob&) = delete;
-            CallJob& operator=(const CallJob&) = delete;
+            explicit AsyncQueue(ES1BenchmarkAsync& parent);
+            ~AsyncQueue();
 
-            bool IsIdle() const
-            {
-                return _job.IsIdle();
-            }
-
-            bool Submit(std::atomic<uint32_t>& pending, std::function<void()>&& task)
-            {
-                if (IsIdle() == false) {
-                    return false;
-                }
-
-                std::lock_guard<std::mutex> lock(_lock);
-                _pending = &pending;
-                _task = std::move(task);
-                _job.Submit();
-                return true;
-            }
+            void Submit(const Job& job);
+            void Cancel();
 
         private:
-            friend Core::ThreadPool::JobType<CallJob&>;
-            void Dispatch()
-            {
-                std::function<void()> task;
-                std::atomic<uint32_t>* pending = nullptr;
-                {
-                    std::lock_guard<std::mutex> lock(_lock);
-                    task = std::move(_task);
-                    pending = _pending;
-                    _pending = nullptr;
-                }
+            friend class Core::ThreadPool::JobType<AsyncQueue&>;
+            void Dispatch();
 
-                task();
-                --(*pending);
-            }
-
-            Core::WorkerPool::JobType<CallJob&> _job;
+            ES1BenchmarkAsync& _parent;
             std::mutex _lock;
-            std::atomic<uint32_t>* _pending;
-            std::function<void()> _task;
+            std::deque<Job> _jobs;
+            bool _scheduled;
         };
 
-        static constexpr uint32_t JobSlots = 64;
-
-        template <typename CALLBACK, typename FUNCTION>
-        Core::hresult Queue(CALLBACK* const callback, FUNCTION&& function)
+        template <typename ACTION>
+        void NotifySink(const ACTION& action)
         {
-            if (callback == nullptr) {
-                return Core::ERROR_BAD_REQUEST;
+            Notification* notification = nullptr;
+            _adminLock.Lock();
+            if (_active && _notification != nullptr) {
+                notification = _notification;
+                notification->AddRef();
             }
-            if (Core::IWorkerPool::IsAvailable() == false) {
-                return Core::ERROR_UNAVAILABLE;
+            _adminLock.Unlock();
+
+            if (notification != nullptr) {
+                action(notification);
+                notification->Release();
             }
-
-            callback->AddRef();
-            ++_pendingJobs;
-
-            std::function<void()> task = [callback, function = std::forward<FUNCTION>(function)]() mutable {
-                function(callback);
-                callback->Release();
-            };
-
-            std::lock_guard<std::mutex> lock(_jobsLock);
-            for (CallJob& job : _jobs) {
-                if (job.Submit(_pendingJobs, std::move(task))) {
-                    return Core::ERROR_NONE;
-                }
-            }
-
-            --_pendingJobs;
-            callback->Release();
-            return Core::ERROR_INPROGRESS;
         }
 
-        bool JobsIdle() const
-        {
-            std::lock_guard<std::mutex> lock(_jobsLock);
-            for (const CallJob& job : _jobs) {
-                if (job.IsIdle() == false) {
-                    return false;
-                }
-            }
-            return true;
-        }
+        void NotifySetString(bool success);
+        void NotifyGetString(const string& value);
+        void NotifySetArray(bool success);
+        void NotifyGetArray(const std::vector<uint8_t>& value);
+        void NotifySetMixedArray(bool success);
+        void NotifyGetMixedArray(const std::vector<MixedElement>& value);
+        void NotifySetNestedObjects(bool success);
+        void NotifyGetNestedObjects(const std::vector<NestedObject>& value);
+        void NotifySetUint32(bool success);
+        void NotifyGetUint32(uint32_t value);
+        void NotifySetUint64(bool success);
+        void NotifyGetUint64(uint64_t value);
+        void NotifySetBool(bool success);
+        void NotifyGetBool(bool value);
+        void NotifySetFloat(bool success);
+        void NotifyGetFloat(float value);
+        void NotifySetDouble(bool success);
+        void NotifyGetDouble(double value);
+        void NotifyMeasureCopyCost(uint64_t microseconds);
+        void NotifyMeasureStringResizeCost(uint64_t microseconds);
+        void NotifyMeasureMixedAssignCost(uint64_t microseconds);
+        void NotifyMeasureNestedAssignCost(uint64_t microseconds);
 
-        std::array<CallJob, JobSlots> _jobs;
-        mutable std::mutex _jobsLock;
-        std::atomic<uint32_t> _pendingJobs { 0 };
+        Core::CriticalSection _adminLock;
+        Notification* _notification;
+        bool _active;
+        AsyncQueue _queue;
         std::thread _notifyThread;
     };
 
