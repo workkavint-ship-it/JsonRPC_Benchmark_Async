@@ -1,8 +1,15 @@
 mode=warm
+transport=ws
 host=127.0.0.1
 port=9998
 iterations=20
+warmup=3
+clients=32,8,1
+skip_scalars=false
+tier=multiple
 size=5KB
 timeout_s=30
+coldstart_poll_ms=100
+coldstart_timeout_s=120
 result_file_enabled=false
 result_file=/opt/es1-async-results.jsonl

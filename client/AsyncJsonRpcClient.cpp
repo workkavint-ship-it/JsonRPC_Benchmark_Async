@@ -11,6 +11,8 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -19,6 +21,8 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -50,11 +54,18 @@ std::string JsonEscape(const std::string& value)
 
 struct Config {
     std::string mode = "warm";
+    std::string transport = "ws";
     std::string host = "127.0.0.1";
     int port = 9998;
     int iterations = 20;
+    int warmup = 3;
     std::string size = "5KB";
+    std::string tier = "multiple";
+    std::vector<int> clients = { 1 };
+    bool skipScalars = false;
     int timeoutS = 30;
+    int coldstartPollMs = 100;
+    int coldstartTimeoutS = 120;
     bool resultFileEnabled = false;
     std::string resultFile = "/opt/es1-async-results.jsonl";
 };
@@ -80,11 +91,27 @@ bool LoadConfig(const std::string& path, Config* output)
         const std::string key = Trim(entry.substr(0, separator));
         const std::string value = Trim(entry.substr(separator + 1));
         if (key == "mode") config.mode = value;
+        else if (key == "transport") config.transport = value;
         else if (key == "host") config.host = value;
         else if (key == "port") config.port = std::stoi(value);
         else if (key == "iterations") config.iterations = std::stoi(value);
+        else if (key == "warmup") config.warmup = std::stoi(value);
         else if (key == "size") config.size = value;
+        else if (key == "tier") config.tier = value;
+        else if (key == "skip_scalars") config.skipScalars = (value == "true" || value == "1");
+        else if (key == "clients") {
+            config.clients.clear();
+            std::stringstream clients(value);
+            std::string token;
+            while (std::getline(clients, token, ',')) {
+                token = Trim(token);
+                if (!token.empty()) config.clients.push_back(std::stoi(token));
+            }
+            if (config.clients.empty()) config.clients.push_back(1);
+        }
         else if (key == "timeout_s") config.timeoutS = std::stoi(value);
+        else if (key == "coldstart_poll_ms") config.coldstartPollMs = std::stoi(value);
+        else if (key == "coldstart_timeout_s") config.coldstartTimeoutS = std::stoi(value);
         else if (key == "result_file_enabled") config.resultFileEnabled = (value == "true" || value == "1");
         else if (key == "result_file") config.resultFile = value;
     }
@@ -449,6 +476,293 @@ bool Run(AsyncClient* client, const std::string& method, const std::string& para
     return true;
 }
 
+struct TestCase {
+    std::string method;
+    std::string params;
+    std::string tier;
+    long payloadSize;
+};
+
+std::string ExactArray(long targetBytes, const std::string& kind, long limit, long* countOut)
+{
+    const double average = kind == "array" ? 4.57 : kind == "mixed" ? 62.0 : 151.0;
+    long count = std::min<long>(limit, std::max<long>(1, static_cast<long>(targetBytes / average)));
+    std::vector<std::string> elements;
+    elements.reserve(static_cast<size_t>(count));
+
+    const auto makeElement = [&kind](const long index) {
+        std::ostringstream element;
+        if (kind == "array") {
+            element << (index % 256);
+        } else if (kind == "mixed") {
+            element << "{\"id\":" << index << ",\"name\":\"item" << index
+                    << "\",\"value\":" << index * 3.14159
+                    << ",\"flag\":" << ((index % 2 == 0) ? "true" : "false") << '}';
+        } else {
+            element << "{\"id\":" << index
+                    << ",\"flag\":" << ((index % 2 == 0) ? "true" : "false")
+                    << ",\"score\":" << index * 3.14159
+                    << ",\"data\":{\"label\":\"item" << index
+                    << "\",\"nested\":{\"count\":" << index
+                    << ",\"inner\":{\"value\":" << index * 3
+                    << ",\"name\":\"deep" << index << "\"}}}}";
+        }
+        return element.str();
+    };
+
+    for (long index = 0; index < count; ++index) {
+        elements.push_back(makeElement(index));
+    }
+
+    auto length = [&elements]() {
+        long result = 2;
+        for (size_t index = 0; index < elements.size(); ++index) {
+            result += static_cast<long>(elements[index].size()) + (index == 0 ? 0 : 1);
+        }
+        return result;
+    };
+
+    long current = length();
+    for (long index = count; current < targetBytes && index < limit; ++index) {
+        const std::string element = makeElement(index);
+        current += static_cast<long>(element.size()) + 1;
+        elements.push_back(std::move(element));
+    }
+    while (current > targetBytes && elements.size() > 1) {
+        current -= static_cast<long>(elements.back().size()) + 1;
+        elements.pop_back();
+    }
+
+    if (countOut != nullptr) *countOut = static_cast<long>(elements.size());
+    std::ostringstream output;
+    output << '[';
+    for (size_t index = 0; index < elements.size(); ++index) {
+        if (index != 0) output << ',';
+        output << elements[index];
+    }
+    output << ']';
+    return output.str();
+}
+
+std::vector<TestCase> BuildTierTests(const std::string& tier, long size)
+{
+    std::vector<TestCase> tests;
+    tests.push_back({ "setstring", "{\"value\":\"" + std::string(static_cast<size_t>(size), 'A') + "\"}", tier, size });
+    tests.push_back({ "getstring", "{\"size\":" + std::to_string(size) + "}", tier, size });
+
+    long arrayCount = 0;
+    long mixedCount = 0;
+    long nestedCount = 0;
+    const std::string array = ExactArray(size, "array", 256 * 1024, &arrayCount);
+    const std::string mixed = ExactArray(size, "mixed", 4228, &mixedCount);
+    const std::string nested = ExactArray(size, "nested", 1736, &nestedCount);
+    tests.push_back({ "setarray", "{\"value\":" + array + "}", tier, size });
+    tests.push_back({ "getarray", "{\"size\":" + std::to_string(arrayCount) + "}", tier, size });
+    tests.push_back({ "setmixedarray", "{\"value\":" + mixed + "}", tier, size });
+    tests.push_back({ "getmixedarray", "{\"count\":" + std::to_string(mixedCount) + "}", tier, size });
+    tests.push_back({ "setnestedobjects", "{\"value\":" + nested + "}", tier, size });
+    tests.push_back({ "getnestedobjects", "{\"count\":" + std::to_string(nestedCount) + "}", tier, size });
+    return tests;
+}
+
+std::vector<TestCase> BuildScalarTests()
+{
+    return {
+        { "setuint32", "{\"value\":4294967295}", "scalar", 0 },
+        { "getuint32", "{}", "scalar", 0 },
+        { "setuint64", "{\"value\":18446744073709551615}", "scalar", 0 },
+        { "getuint64", "{}", "scalar", 0 },
+        { "setbool", "{\"value\":true}", "scalar", 0 },
+        { "getbool", "{}", "scalar", 0 },
+        { "setfloat", "{\"value\":3.4028235e+38}", "scalar", 0 },
+        { "getfloat", "{}", "scalar", 0 },
+        { "setdouble", "{\"value\":1.7976931348623157e+308}", "scalar", 0 },
+        { "getdouble", "{}", "scalar", 0 }
+    };
+}
+
+class StartGate {
+public:
+    explicit StartGate(const int expected) : _expected(expected) {}
+
+    void Arrive()
+    {
+        std::unique_lock<std::mutex> lock(_lock);
+        ++_arrived;
+        _condition.notify_all();
+        _condition.wait(lock, [this] { return _released; });
+    }
+
+    void Release()
+    {
+        std::lock_guard<std::mutex> lock(_lock);
+        _released = true;
+        _condition.notify_all();
+    }
+
+    void WaitForAll()
+    {
+        std::unique_lock<std::mutex> lock(_lock);
+        _condition.wait(lock, [this] { return _arrived == _expected; });
+    }
+
+private:
+    std::mutex _lock;
+    std::condition_variable _condition;
+    int _expected;
+    int _arrived = 0;
+    bool _released = false;
+};
+
+struct Stats {
+    double minMs = 0;
+    double maxMs = 0;
+    double averageMs = 0;
+    double standardDeviationMs = 0;
+    int samples = 0;
+    int failed = 0;
+};
+
+Stats CalculateStats(const std::vector<double>& samples, const int failed)
+{
+    Stats stats;
+    stats.failed = failed;
+    if (samples.empty()) return stats;
+
+    stats.samples = static_cast<int>(samples.size());
+    stats.minMs = *std::min_element(samples.begin(), samples.end());
+    stats.maxMs = *std::max_element(samples.begin(), samples.end());
+    for (double sample : samples) stats.averageMs += sample;
+    stats.averageMs /= samples.size();
+    for (double sample : samples) {
+        const double delta = sample - stats.averageMs;
+        stats.standardDeviationMs += delta * delta;
+    }
+    stats.standardDeviationMs = std::sqrt(stats.standardDeviationMs / samples.size());
+    return stats;
+}
+
+bool WaitForReady(const Config& config)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(config.coldstartTimeoutS);
+    while (std::chrono::steady_clock::now() < deadline) {
+        AsyncClient client;
+        if (client.Connect(config)) {
+            uint64_t elapsed = 0;
+            if (client.Call("getuint64", "{}", &elapsed)) return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(config.coldstartPollMs));
+    }
+    return false;
+}
+
+void RunTest(const Config& config, const TestCase& test, const int clientCount, std::ofstream* resultFile)
+{
+    StartGate gate(clientCount);
+    std::vector<std::vector<double>> clientSamples(static_cast<size_t>(clientCount));
+    std::vector<std::thread> workers;
+    workers.reserve(static_cast<size_t>(clientCount));
+
+    for (int clientIndex = 0; clientIndex < clientCount; ++clientIndex) {
+        workers.emplace_back([&, clientIndex] {
+            AsyncClient client;
+            if (!client.Connect(config)) {
+                gate.Arrive();
+                return;
+            }
+
+            uint64_t elapsed = 0;
+            for (int warmup = 0; warmup < config.warmup; ++warmup) {
+                client.Call(test.method, test.params, &elapsed);
+            }
+
+            gate.Arrive();
+            for (int iteration = 0; iteration < config.iterations; ++iteration) {
+                if (client.Call(test.method, test.params, &elapsed)) {
+                    clientSamples[static_cast<size_t>(clientIndex)].push_back(elapsed / 1000.0);
+                }
+            }
+        });
+    }
+
+    gate.WaitForAll();
+    gate.Release();
+    for (std::thread& worker : workers) worker.join();
+
+    std::vector<double> roundSamples;
+    int failed = 0;
+    for (int iteration = 0; iteration < config.iterations; ++iteration) {
+        double roundMaximum = 0;
+        bool complete = true;
+        for (int clientIndex = 0; clientIndex < clientCount; ++clientIndex) {
+            const auto& samples = clientSamples[static_cast<size_t>(clientIndex)];
+            if (static_cast<size_t>(iteration) >= samples.size()) {
+                complete = false;
+                break;
+            }
+            roundMaximum = std::max(roundMaximum, samples[static_cast<size_t>(iteration)]);
+        }
+        if (complete) roundSamples.push_back(roundMaximum);
+        else ++failed;
+    }
+
+    const Stats stats = CalculateStats(roundSamples, failed);
+    std::ostringstream output;
+    output << "{\"method\":\"" << test.method
+           << "\",\"tier\":\"" << test.tier
+           << "\",\"payload_bytes\":" << test.payloadSize
+           << ",\"clients\":" << clientCount
+           << ",\"iterations\":" << config.iterations
+           << ",\"warmup\":" << config.warmup
+           << ",\"roundtrip_ms\":{\"min\":" << stats.minMs
+           << ",\"max\":" << stats.maxMs
+           << ",\"avg\":" << stats.averageMs
+           << ",\"stddev\":" << stats.standardDeviationMs
+           << "},\"samples\":" << stats.samples
+           << ",\"failed\":" << stats.failed << '}';
+    Emit(output.str(), resultFile);
+}
+
+int RunMatrix(const Config& config, std::ofstream* resultFile)
+{
+    if (config.transport != "ws") {
+        std::cerr << "async client supports only transport=ws because completions are WebSocket events\n";
+        return 1;
+    }
+    if (config.mode == "coldstart" && !WaitForReady(config)) {
+        std::cerr << "ES1BenchmarkAsync did not become ready before timeout\n";
+        return 1;
+    }
+
+    std::vector<TestCase> tests;
+    if (!config.skipScalars) {
+        const auto scalarTests = BuildScalarTests();
+        tests.insert(tests.end(), scalarTests.begin(), scalarTests.end());
+    }
+    const std::vector<std::pair<std::string, long>> tiers = {
+        { "500B", 500 }, { "5KB", 5L * 1024 }, { "50KB", 50L * 1024 },
+        { "150KB", 150L * 1024 }, { "500KB", 500L * 1024 },
+        { "1MB", 1L * 1024 * 1024 }, { "4MB", 4L * 1024 * 1024 }
+    };
+    if (config.tier == "multiple") {
+        for (const auto& tier : tiers) {
+            const auto tierTests = BuildTierTests(tier.first, tier.second);
+            tests.insert(tests.end(), tierTests.begin(), tierTests.end());
+        }
+    } else {
+        const long size = ParseSize(config.size);
+        const auto tierTests = BuildTierTests(config.size, size);
+        tests.insert(tests.end(), tierTests.begin(), tierTests.end());
+    }
+
+    for (int clientCount : config.clients) {
+        for (const TestCase& test : tests) {
+            RunTest(config, test, std::max(1, clientCount), resultFile);
+        }
+    }
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -464,43 +778,5 @@ int main(int argc, char** argv)
         resultFile.open(config.resultFile, std::ios::out | std::ios::trunc);
     }
 
-    AsyncClient client;
-    if (!client.Connect(config)) {
-        std::cerr << "could not connect to ES1BenchmarkAsync at " << config.host << ':' << config.port << std::endl;
-        return 1;
-    }
-
-    const long size = ParseSize(config.size);
-    const long arrayCount = std::min<long>(256 * 1024, std::max<long>(1, size / 5));
-    const long mixedCount = std::min<long>(4228, std::max<long>(1, size / 62));
-    const long nestedCount = std::min<long>(1736, std::max<long>(1, size / 151));
-
-    for (int iteration = 0; iteration < config.iterations; ++iteration) {
-        if (!Run(&client, "setstring", "{\"value\":\"" + std::string(static_cast<size_t>(size), 'A') + "\"}", iteration, &resultFile)
-            || !Run(&client, "getstring", "{\"size\":" + std::to_string(size) + "}", iteration, &resultFile)
-            || !Run(&client, "setarray", "{\"value\":" + ArrayPayload(arrayCount) + "}", iteration, &resultFile)
-            || !Run(&client, "getarray", "{\"size\":" + std::to_string(arrayCount) + "}", iteration, &resultFile)
-            || !Run(&client, "setmixedarray", "{\"value\":" + MixedPayload(mixedCount) + "}", iteration, &resultFile)
-            || !Run(&client, "getmixedarray", "{\"count\":" + std::to_string(mixedCount) + "}", iteration, &resultFile)
-            || !Run(&client, "setnestedobjects", "{\"value\":" + NestedPayload(nestedCount) + "}", iteration, &resultFile)
-            || !Run(&client, "getnestedobjects", "{\"count\":" + std::to_string(nestedCount) + "}", iteration, &resultFile)
-            || !Run(&client, "setuint32", "{\"value\":4294967295}", iteration, &resultFile)
-            || !Run(&client, "getuint32", "{}", iteration, &resultFile)
-            || !Run(&client, "setuint64", "{\"value\":18446744073709551615}", iteration, &resultFile)
-            || !Run(&client, "getuint64", "{}", iteration, &resultFile)
-            || !Run(&client, "setbool", "{\"value\":true}", iteration, &resultFile)
-            || !Run(&client, "getbool", "{}", iteration, &resultFile)
-            || !Run(&client, "setfloat", "{\"value\":3.4028235e+38}", iteration, &resultFile)
-            || !Run(&client, "getfloat", "{}", iteration, &resultFile)
-            || !Run(&client, "setdouble", "{\"value\":1.7976931348623157e+308}", iteration, &resultFile)
-            || !Run(&client, "getdouble", "{}", iteration, &resultFile)
-            || !Run(&client, "measurecopycost", "{\"size\":" + std::to_string(arrayCount) + "}", iteration, &resultFile)
-            || !Run(&client, "measurestringresizecost", "{\"size\":" + std::to_string(size) + "}", iteration, &resultFile)
-            || !Run(&client, "measuremixedassigncost", "{\"count\":" + std::to_string(mixedCount) + "}", iteration, &resultFile)
-            || !Run(&client, "measurenestedassigncost", "{\"count\":" + std::to_string(nestedCount) + "}", iteration, &resultFile)) {
-            return 1;
-        }
-    }
-
-    return 0;
+    return RunMatrix(config, &resultFile);
 }

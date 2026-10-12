@@ -1,0 +1,17 @@
+mode=warm
+transport=ws
+test_scope=both
+operation=both
+tier=single
+size=5KB
+clients=100
+iterations=10
+warmup=0
+host=127.0.0.1
+port=9998
+timeout_s=30
+log_request_response=true
+log_max_bytes=16384
+progress_output=true
+result_file_enabled=true
+result_file=/opt/AsyncJsonRpcLoadClient-result.jsonl
