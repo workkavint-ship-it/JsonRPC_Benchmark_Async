@@ -1,2 +1,9 @@
 autostart = "@PLUGIN_ES1BENCHMARKASYNC_AUTOSTART@"
-mode = "@PLUGIN_ES1BENCHMARKASYNC_MODE@"
+
+configuration = {
+	"mode": "@PLUGIN_ES1BENCHMARKASYNC_MODE@",
+	"notifyhost": "127.0.0.1",
+	"notifyport": 8080,
+	"thunderhost": "127.0.0.1",
+	"thunderport": 9998
+}
