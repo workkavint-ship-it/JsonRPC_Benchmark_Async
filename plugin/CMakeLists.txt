@@ -1,5 +1,6 @@
 set(PLUGIN_NAME ES1BenchmarkAsync)
 set(MODULE_NAME ${NAMESPACE}${PLUGIN_NAME})
+set(PLUGIN_IMPLEMENTATION ${MODULE_NAME}Implementation)
 
 set(PLUGIN_ES1BENCHMARKASYNC_AUTOSTART "true" CACHE STRING "Automatically start ES1BenchmarkAsync")
 set(PLUGIN_ES1BENCHMARKASYNC_MODE "Local" CACHE STRING "Plugin execution mode")
@@ -17,7 +18,16 @@ add_library(${MODULE_NAME} SHARED
     ES1BenchmarkAsync.cpp
 )
 
+add_library(${PLUGIN_IMPLEMENTATION} SHARED
+    Module.cpp
+    ES1BenchmarkAsyncImplementation.cpp
+)
+
 set_target_properties(${MODULE_NAME} PROPERTIES
+    CXX_STANDARD 14
+    CXX_STANDARD_REQUIRED YES
+)
+set_target_properties(${PLUGIN_IMPLEMENTATION} PROPERTIES
     CXX_STANDARD 14
     CXX_STANDARD_REQUIRED YES
 )
@@ -27,7 +37,16 @@ target_link_libraries(${MODULE_NAME}
         ${NAMESPACE}Plugins::${NAMESPACE}Plugins
         ${NAMESPACE}Definitions::${NAMESPACE}Definitions
 )
+target_link_libraries(${PLUGIN_IMPLEMENTATION}
+    PRIVATE
+        CompileSettingsDebug::CompileSettingsDebug
+        ${NAMESPACE}Plugins::${NAMESPACE}Plugins
+        ${NAMESPACE}Definitions::${NAMESPACE}Definitions
+)
 install(TARGETS ${MODULE_NAME}
+    DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/${STORAGE_DIRECTORY}/plugins
+)
+install(TARGETS ${PLUGIN_IMPLEMENTATION}
     DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/${STORAGE_DIRECTORY}/plugins
 )
 
