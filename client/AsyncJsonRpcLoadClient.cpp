@@ -306,15 +306,22 @@ public:
     bool Call(const TestCase& test, double* elapsedMs, std::string* requestLog, std::string* responseLog)
     {
         const std::string event = test.method + "completed";
-        if (!Register(event)) return false;
+        if (!Register(event)) {
+            Log("register failed for event=" + event + " clientId=" + _clientId);
+            return false;
+        }
         const uint64_t requestId = ++_requestId;
         std::ostringstream request;
         request << "{\"jsonrpc\":\"2.0\",\"id\":" << requestId
                 << ",\"method\":\"ES1BenchmarkAsync.1." << test.method
                 << "\",\"params\":" << InjectRequestId(test.params, requestId) << "}";
         if (requestLog != nullptr) *requestLog = request.str();
+        LogRequest(request.str());
         const auto start = std::chrono::steady_clock::now();
-        if (!_socket.SendText(request.str())) return false;
+        if (!_socket.SendText(request.str())) {
+            Log("send failed for method=" + test.method + " requestId=" + std::to_string(requestId));
+            return false;
+        }
         const std::string ack = "\"id\":" + std::to_string(requestId) + ",";
         // Event name alone only narrows to "this channel, this event" - every
         // client registered for the same event still receives every
@@ -325,30 +332,93 @@ public:
         bool acknowledged = false;
         std::string message;
         while (!acknowledged) {
-            if (!_socket.Receive(&message)) return false;
+            if (!_socket.Receive(&message)) {
+                Log("socket closed/timed out waiting for ack id=" + std::to_string(requestId)
+                    + " method=" + test.method + " - last message seen: " + Truncate(message));
+                return false;
+            }
             if (message.find(ack) != std::string::npos) {
-                if (message.find("\"error\"") != std::string::npos) return false;
+                if (message.find("\"error\"") != std::string::npos) {
+                    Log("ack came back with an error for id=" + std::to_string(requestId)
+                        + " method=" + test.method + ": " + Truncate(message));
+                    return false;
+                }
                 acknowledged = true;
             }
         }
+        LogResponse("ack", message);
         while (message.find(completion) == std::string::npos
                || message.find(requestIdMarker) == std::string::npos) {
-            if (!_socket.Receive(&message)) return false;
+            if (!_socket.Receive(&message)) {
+                Log("socket closed/timed out waiting for completion method=" + test.method
+                    + " requestId=" + std::to_string(requestId) + " expected marker=" + completion
+                    + " expected requestIdMarker=" + requestIdMarker
+                    + " - last message seen: " + Truncate(message));
+                return false;
+            }
+            LogResponse("notification", message);
         }
         if (responseLog != nullptr) *responseLog = message;
         *elapsedMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-        return Unregister(event);
+        if (!Unregister(event)) {
+            Log("warning: unregister failed for event=" + event + " clientId=" + _clientId);
+        }
+        return true;
     }
 
 private:
+    void Log(const std::string& line) const
+    {
+        if (_config.progressOutput || _config.logRequestResponse) {
+            std::cerr << "[" << _clientId << "] " << line << std::endl;
+        }
+    }
+
+    void LogRequest(const std::string& request) const
+    {
+        if (_config.logRequestResponse) {
+            std::cerr << "[" << _clientId << "] >> " << Truncate(request) << std::endl;
+        }
+    }
+
+    void LogResponse(const char* kind, const std::string& response) const
+    {
+        if (_config.logRequestResponse) {
+            std::cerr << "[" << _clientId << "] << (" << kind << ") " << Truncate(response) << std::endl;
+        }
+    }
+
+    std::string Truncate(const std::string& text) const
+    {
+        const int limit = _config.logMaxBytes;
+        if (limit <= 0 || static_cast<int>(text.size()) <= limit) return text;
+        return text.substr(0, static_cast<size_t>(limit)) + "...<truncated>";
+    }
+
     bool SendAndWait(uint64_t id, const std::string& request)
     {
-        if (!_socket.SendText(request)) return false;
+        LogRequest(request);
+        if (!_socket.SendText(request)) {
+            Log("send failed for register/unregister id=" + std::to_string(id));
+            return false;
+        }
         const std::string marker = "\"id\":" + std::to_string(id) + ",";
         std::string response;
         for (;;) {
-            if (!_socket.Receive(&response)) return false;
-            if (response.find(marker) != std::string::npos) return response.find("\"error\"") == std::string::npos;
+            if (!_socket.Receive(&response)) {
+                Log("socket closed/timed out waiting for register/unregister ack id=" + std::to_string(id)
+                    + " - last message seen: " + Truncate(response));
+                return false;
+            }
+            if (response.find(marker) != std::string::npos) {
+                LogResponse("register/unregister ack", response);
+                if (response.find("\"error\"") != std::string::npos) {
+                    Log("register/unregister ack came back with an error for id=" + std::to_string(id)
+                        + ": " + Truncate(response));
+                    return false;
+                }
+                return true;
+            }
         }
     }
 
