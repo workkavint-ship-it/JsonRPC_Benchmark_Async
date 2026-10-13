@@ -274,10 +274,13 @@ struct TestCase {
 };
 
 // Splices a "requestId" field into a pre-built JSON params object, e.g.
-// "{\"value\":1}" -> "{\"requestId\":7,\"value\":1}", or "{}" -> "{\"requestId\":7}".
+// "{\"value\":1}" -> "{\"requestid\":7,\"value\":1}", or "{}" -> "{\"requestid\":7}".
 std::string InjectRequestId(const std::string& parameters, uint64_t requestId)
 {
-    const std::string field = "\"requestId\":" + std::to_string(requestId);
+    // JsonGenerator's default (LEGACY) case convention lowercases parameter
+    // names in the generated JSON-RPC wire schema, so the C++ parameter
+    // "requestId" actually travels on the wire as "requestid".
+    const std::string field = "\"requestid\":" + std::to_string(requestId);
     const std::string trimmed = Trim(parameters);
     if (trimmed.size() < 2 || trimmed.front() != '{' || trimmed.back() != '}') {
         return parameters;
@@ -318,7 +321,7 @@ public:
         // completion of it. The requestId marker confirms this completion
         // actually belongs to this call, not a different concurrent client's.
         const std::string completion = "\"method\":\"" + _clientId + "." + event + "\"";
-        const std::string requestIdMarker = "\"requestId\":" + std::to_string(requestId);
+        const std::string requestIdMarker = "\"requestid\":" + std::to_string(requestId);
         bool acknowledged = false;
         std::string message;
         while (!acknowledged) {
