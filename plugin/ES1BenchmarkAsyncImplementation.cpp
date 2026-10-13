@@ -86,7 +86,7 @@ namespace Plugin {
             }
         }
         if (schedule) {
-            JobType::Reschedule(Core::Time::Now().Add(10000));
+            JobType::Reschedule(Core::Time::Now().Add(5000));
         }
     }
 
