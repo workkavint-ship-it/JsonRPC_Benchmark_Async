@@ -120,7 +120,7 @@ namespace Plugin {
 
     ES1BenchmarkAsyncImplementation::ES1BenchmarkAsyncImplementation()
         : _adminLock()
-        , _notifications()
+        , _notification(nullptr)
         , _queue(*this)
     {
     }
@@ -128,42 +128,38 @@ namespace Plugin {
     ES1BenchmarkAsyncImplementation::~ES1BenchmarkAsyncImplementation()
     {
         _queue.Cancel();
-        std::vector<Notification*> notifications;
+        Notification* notification = nullptr;
         _adminLock.Lock();
-        for (const auto& entry : _notifications) notifications.push_back(entry.second);
-        _notifications.clear();
+        notification = _notification;
+        _notification = nullptr;
         _adminLock.Unlock();
-        for (Notification* notification : notifications) notification->Release();
+        if (notification != nullptr) notification->Release();
     }
 
     SERVICE_REGISTRATION(ES1BenchmarkAsyncImplementation, 1, 0);
 
-    Core::hresult ES1BenchmarkAsyncImplementation::Register(Notification* const notification, const Core::OptionalType<string>& clientId)
+    Core::hresult ES1BenchmarkAsyncImplementation::Register(Notification* const notification)
     {
         if (notification == nullptr) return Core::ERROR_BAD_REQUEST;
-        const string id = clientId.IsSet() ? clientId.Value() : string();
         _adminLock.Lock();
-        auto index = _notifications.find(id);
-        if (index != _notifications.end()) {
-            const bool same = (index->second == notification);
+        if (_notification != nullptr) {
+            const bool same = (_notification == notification);
             _adminLock.Unlock();
             return same ? Core::ERROR_NONE : Core::ERROR_ALREADY_CONNECTED;
         }
         notification->AddRef();
-        _notifications.emplace(id, notification);
+        _notification = notification;
         _adminLock.Unlock();
         return Core::ERROR_NONE;
     }
 
-    Core::hresult ES1BenchmarkAsyncImplementation::Unregister(const Notification* notification, const Core::OptionalType<string>& clientId)
+    Core::hresult ES1BenchmarkAsyncImplementation::Unregister(const Notification* notification)
     {
         Notification* registered = nullptr;
-        const string id = clientId.IsSet() ? clientId.Value() : string();
         _adminLock.Lock();
-        auto index = _notifications.find(id);
-        if (index != _notifications.end() && index->second == notification) {
-            registered = index->second;
-            _notifications.erase(index);
+        if (_notification == notification) {
+            registered = _notification;
+            _notification = nullptr;
         }
         _adminLock.Unlock();
         if (registered == nullptr) return Core::ERROR_UNKNOWN_KEY;
@@ -171,107 +167,124 @@ namespace Plugin {
         return Core::ERROR_NONE;
     }
 
-    Core::hresult ES1BenchmarkAsyncImplementation::SetString(const string& /* value */)
-    { _queue.Submit([this] { NotifySetString(true); }); return Core::ERROR_NONE; }
-    Core::hresult ES1BenchmarkAsyncImplementation::GetString(const uint32_t size)
+    Core::hresult ES1BenchmarkAsyncImplementation::SetString(const uint32_t requestId, const string& /* value */)
+    { _queue.Submit([this, requestId] { NotifySetString(requestId, true); }); return Core::ERROR_NONE; }
+
+    Core::hresult ES1BenchmarkAsyncImplementation::GetString(const uint32_t requestId, const uint32_t size)
     {
         if (size > StringBuffer().size()) return Core::ERROR_INVALID_RANGE;
-        _queue.Submit([this, size] { NotifyGetString(StringBuffer().substr(0, size)); });
+        _queue.Submit([this, requestId, size] { NotifyGetString(requestId, StringBuffer().substr(0, size)); });
         return Core::ERROR_NONE;
     }
-    Core::hresult ES1BenchmarkAsyncImplementation::SetArray(const std::vector<uint8_t>& /* value */)
-    { _queue.Submit([this] { NotifySetArray(true); }); return Core::ERROR_NONE; }
-    Core::hresult ES1BenchmarkAsyncImplementation::GetArray(const uint32_t size)
+
+    Core::hresult ES1BenchmarkAsyncImplementation::SetArray(const uint32_t requestId, const std::vector<uint8_t>& /* value */)
+    { _queue.Submit([this, requestId] { NotifySetArray(requestId, true); }); return Core::ERROR_NONE; }
+
+    Core::hresult ES1BenchmarkAsyncImplementation::GetArray(const uint32_t requestId, const uint32_t size)
     {
         if (size > ByteBuffer().size()) return Core::ERROR_INVALID_RANGE;
-        _queue.Submit([this, size] { NotifyGetArray(std::vector<uint8_t>(ByteBuffer().begin(), ByteBuffer().begin() + size)); });
+        _queue.Submit([this, requestId, size] { NotifyGetArray(requestId, std::vector<uint8_t>(ByteBuffer().begin(), ByteBuffer().begin() + size)); });
         return Core::ERROR_NONE;
     }
-    Core::hresult ES1BenchmarkAsyncImplementation::SetMixedArray(const std::vector<MixedElement>& /* value */)
-    { _queue.Submit([this] { NotifySetMixedArray(true); }); return Core::ERROR_NONE; }
-    Core::hresult ES1BenchmarkAsyncImplementation::GetMixedArray(const uint32_t count)
+
+    Core::hresult ES1BenchmarkAsyncImplementation::SetMixedArray(const uint32_t requestId, const std::vector<MixedElement>& /* value */)
+    { _queue.Submit([this, requestId] { NotifySetMixedArray(requestId, true); }); return Core::ERROR_NONE; }
+
+    Core::hresult ES1BenchmarkAsyncImplementation::GetMixedArray(const uint32_t requestId, const uint32_t count)
     {
         if (count > MixedValues().size()) return Core::ERROR_INVALID_RANGE;
-        _queue.Submit([this, count] { NotifyGetMixedArray(std::vector<MixedElement>(MixedValues().begin(), MixedValues().begin() + count)); });
+        _queue.Submit([this, requestId, count] { NotifyGetMixedArray(requestId, std::vector<MixedElement>(MixedValues().begin(), MixedValues().begin() + count)); });
         return Core::ERROR_NONE;
     }
-    Core::hresult ES1BenchmarkAsyncImplementation::SetNestedObjects(const std::vector<NestedObject>& /* value */)
-    { _queue.Submit([this] { NotifySetNestedObjects(true); }); return Core::ERROR_NONE; }
-    Core::hresult ES1BenchmarkAsyncImplementation::GetNestedObjects(const uint32_t count)
+
+    Core::hresult ES1BenchmarkAsyncImplementation::SetNestedObjects(const uint32_t requestId, const std::vector<NestedObject>& /* value */)
+    { _queue.Submit([this, requestId] { NotifySetNestedObjects(requestId, true); }); return Core::ERROR_NONE; }
+
+    Core::hresult ES1BenchmarkAsyncImplementation::GetNestedObjects(const uint32_t requestId, const uint32_t count)
     {
         if (count > NestedValues().size()) return Core::ERROR_INVALID_RANGE;
-        _queue.Submit([this, count] { NotifyGetNestedObjects(std::vector<NestedObject>(NestedValues().begin(), NestedValues().begin() + count)); });
+        _queue.Submit([this, requestId, count] { NotifyGetNestedObjects(requestId, std::vector<NestedObject>(NestedValues().begin(), NestedValues().begin() + count)); });
         return Core::ERROR_NONE;
     }
 
-    Core::hresult ES1BenchmarkAsyncImplementation::SetUint32(const uint32_t /* value */) { _queue.Submit([this] { NotifySetUint32(true); }); return Core::ERROR_NONE; }
-    Core::hresult ES1BenchmarkAsyncImplementation::GetUint32() { _queue.Submit([this] { NotifyGetUint32(StaticUint32); }); return Core::ERROR_NONE; }
-    Core::hresult ES1BenchmarkAsyncImplementation::SetUint64(const uint64_t /* value */) { _queue.Submit([this] { NotifySetUint64(true); }); return Core::ERROR_NONE; }
-    Core::hresult ES1BenchmarkAsyncImplementation::GetUint64() { _queue.Submit([this] { NotifyGetUint64(StaticUint64); }); return Core::ERROR_NONE; }
-    Core::hresult ES1BenchmarkAsyncImplementation::SetBool(const bool /* value */) { _queue.Submit([this] { NotifySetBool(true); }); return Core::ERROR_NONE; }
-    Core::hresult ES1BenchmarkAsyncImplementation::GetBool() { _queue.Submit([this] { NotifyGetBool(StaticBool); }); return Core::ERROR_NONE; }
-    Core::hresult ES1BenchmarkAsyncImplementation::SetFloat(const float /* value */) { _queue.Submit([this] { NotifySetFloat(true); }); return Core::ERROR_NONE; }
-    Core::hresult ES1BenchmarkAsyncImplementation::GetFloat() { _queue.Submit([this] { NotifyGetFloat(StaticFloat); }); return Core::ERROR_NONE; }
-    Core::hresult ES1BenchmarkAsyncImplementation::SetDouble(const double /* value */) { _queue.Submit([this] { NotifySetDouble(true); }); return Core::ERROR_NONE; }
-    Core::hresult ES1BenchmarkAsyncImplementation::GetDouble() { _queue.Submit([this] { NotifyGetDouble(StaticDouble); }); return Core::ERROR_NONE; }
+    Core::hresult ES1BenchmarkAsyncImplementation::SetUint32(const uint32_t requestId, const uint32_t /* value */)
+    { _queue.Submit([this, requestId] { NotifySetUint32(requestId, true); }); return Core::ERROR_NONE; }
+    Core::hresult ES1BenchmarkAsyncImplementation::GetUint32(const uint32_t requestId)
+    { _queue.Submit([this, requestId] { NotifyGetUint32(requestId, StaticUint32); }); return Core::ERROR_NONE; }
+    Core::hresult ES1BenchmarkAsyncImplementation::SetUint64(const uint32_t requestId, const uint64_t /* value */)
+    { _queue.Submit([this, requestId] { NotifySetUint64(requestId, true); }); return Core::ERROR_NONE; }
+    Core::hresult ES1BenchmarkAsyncImplementation::GetUint64(const uint32_t requestId)
+    { _queue.Submit([this, requestId] { NotifyGetUint64(requestId, StaticUint64); }); return Core::ERROR_NONE; }
+    Core::hresult ES1BenchmarkAsyncImplementation::SetBool(const uint32_t requestId, const bool /* value */)
+    { _queue.Submit([this, requestId] { NotifySetBool(requestId, true); }); return Core::ERROR_NONE; }
+    Core::hresult ES1BenchmarkAsyncImplementation::GetBool(const uint32_t requestId)
+    { _queue.Submit([this, requestId] { NotifyGetBool(requestId, StaticBool); }); return Core::ERROR_NONE; }
+    Core::hresult ES1BenchmarkAsyncImplementation::SetFloat(const uint32_t requestId, const float /* value */)
+    { _queue.Submit([this, requestId] { NotifySetFloat(requestId, true); }); return Core::ERROR_NONE; }
+    Core::hresult ES1BenchmarkAsyncImplementation::GetFloat(const uint32_t requestId)
+    { _queue.Submit([this, requestId] { NotifyGetFloat(requestId, StaticFloat); }); return Core::ERROR_NONE; }
+    Core::hresult ES1BenchmarkAsyncImplementation::SetDouble(const uint32_t requestId, const double /* value */)
+    { _queue.Submit([this, requestId] { NotifySetDouble(requestId, true); }); return Core::ERROR_NONE; }
+    Core::hresult ES1BenchmarkAsyncImplementation::GetDouble(const uint32_t requestId)
+    { _queue.Submit([this, requestId] { NotifyGetDouble(requestId, StaticDouble); }); return Core::ERROR_NONE; }
 
-    Core::hresult ES1BenchmarkAsyncImplementation::MeasureCopyCost(const uint32_t size)
+    Core::hresult ES1BenchmarkAsyncImplementation::MeasureCopyCost(const uint32_t requestId, const uint32_t size)
     {
         if (size > ByteBuffer().size()) return Core::ERROR_INVALID_RANGE;
-        _queue.Submit([this, size] {
+        _queue.Submit([this, requestId, size] {
             std::vector<uint8_t> destination(size);
             const auto start = std::chrono::steady_clock::now();
             if (size != 0) std::memcpy(destination.data(), ByteBuffer().data(), size);
             const auto end = std::chrono::steady_clock::now();
-            NotifyMeasureCopyCost(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+            NotifyMeasureCopyCost(requestId, std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
         });
         return Core::ERROR_NONE;
     }
 
-    Core::hresult ES1BenchmarkAsyncImplementation::MeasureStringResizeCost(const uint32_t size)
+    Core::hresult ES1BenchmarkAsyncImplementation::MeasureStringResizeCost(const uint32_t requestId, const uint32_t size)
     {
         if (size > StringBuffer().size()) return Core::ERROR_INVALID_RANGE;
-        _queue.Submit([this, size] {
+        _queue.Submit([this, requestId, size] {
             string destination;
             const auto start = std::chrono::steady_clock::now();
             destination.resize(size);
             if (size != 0) std::memcpy(&destination[0], StringBuffer().data(), size);
             const auto end = std::chrono::steady_clock::now();
-            NotifyMeasureStringResizeCost(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+            NotifyMeasureStringResizeCost(requestId, std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
         });
         return Core::ERROR_NONE;
     }
 
-    Core::hresult ES1BenchmarkAsyncImplementation::MeasureMixedAssignCost(const uint32_t count)
+    Core::hresult ES1BenchmarkAsyncImplementation::MeasureMixedAssignCost(const uint32_t requestId, const uint32_t count)
     {
         if (count > MixedValues().size()) return Core::ERROR_INVALID_RANGE;
-        _queue.Submit([this, count] {
+        _queue.Submit([this, requestId, count] {
             std::vector<MixedElement> destination;
             const auto start = std::chrono::steady_clock::now();
             destination.assign(MixedValues().begin(), MixedValues().begin() + count);
             const auto end = std::chrono::steady_clock::now();
-            NotifyMeasureMixedAssignCost(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+            NotifyMeasureMixedAssignCost(requestId, std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
         });
         return Core::ERROR_NONE;
     }
 
-    Core::hresult ES1BenchmarkAsyncImplementation::MeasureNestedAssignCost(const uint32_t count)
+    Core::hresult ES1BenchmarkAsyncImplementation::MeasureNestedAssignCost(const uint32_t requestId, const uint32_t count)
     {
         if (count > NestedValues().size()) return Core::ERROR_INVALID_RANGE;
-        _queue.Submit([this, count] {
+        _queue.Submit([this, requestId, count] {
             std::vector<NestedObject> destination;
             const auto start = std::chrono::steady_clock::now();
             destination.assign(NestedValues().begin(), NestedValues().begin() + count);
             const auto end = std::chrono::steady_clock::now();
-            NotifyMeasureNestedAssignCost(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+            NotifyMeasureNestedAssignCost(requestId, std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
         });
         return Core::ERROR_NONE;
     }
 
 #define NOTIFY_BOOL(name) \
-    void ES1BenchmarkAsyncImplementation::Notify##name(const bool value) \
+    void ES1BenchmarkAsyncImplementation::Notify##name(uint32_t requestId, const bool value) \
     { \
-        NotifySink([value](const string& clientId, Notification* notification) { notification->name##Completed(clientId, value); }); \
+        NotifySink([requestId, value](Notification* notification) { notification->name##Completed(requestId, value); }); \
     }
 
     NOTIFY_BOOL(SetString)
@@ -287,9 +300,9 @@ namespace Plugin {
 #undef NOTIFY_BOOL
 
 #define NOTIFY_VALUE(name, type) \
-    void ES1BenchmarkAsyncImplementation::Notify##name(const type value) \
+    void ES1BenchmarkAsyncImplementation::Notify##name(uint32_t requestId, const type value) \
     { \
-        NotifySink([value](const string& clientId, Notification* notification) { notification->name##Completed(clientId, value); }); \
+        NotifySink([requestId, value](Notification* notification) { notification->name##Completed(requestId, value); }); \
     }
 
     NOTIFY_VALUE(GetUint32, uint32_t)
@@ -304,14 +317,14 @@ namespace Plugin {
 
 #undef NOTIFY_VALUE
 
-    void ES1BenchmarkAsyncImplementation::NotifyGetString(const string& value)
-    { NotifySink([&value](const string& clientId, Notification* notification) { notification->GetStringCompleted(clientId, value); }); }
-    void ES1BenchmarkAsyncImplementation::NotifyGetArray(const std::vector<uint8_t>& value)
-    { NotifySink([&value](const string& clientId, Notification* notification) { notification->GetArrayCompleted(clientId, value); }); }
-    void ES1BenchmarkAsyncImplementation::NotifyGetMixedArray(const std::vector<MixedElement>& value)
-    { NotifySink([&value](const string& clientId, Notification* notification) { notification->GetMixedArrayCompleted(clientId, value); }); }
-    void ES1BenchmarkAsyncImplementation::NotifyGetNestedObjects(const std::vector<NestedObject>& value)
-    { NotifySink([&value](const string& clientId, Notification* notification) { notification->GetNestedObjectsCompleted(clientId, value); }); }
+    void ES1BenchmarkAsyncImplementation::NotifyGetString(uint32_t requestId, const string& value)
+    { NotifySink([requestId, &value](Notification* notification) { notification->GetStringCompleted(requestId, value); }); }
+    void ES1BenchmarkAsyncImplementation::NotifyGetArray(uint32_t requestId, const std::vector<uint8_t>& value)
+    { NotifySink([requestId, &value](Notification* notification) { notification->GetArrayCompleted(requestId, value); }); }
+    void ES1BenchmarkAsyncImplementation::NotifyGetMixedArray(uint32_t requestId, const std::vector<MixedElement>& value)
+    { NotifySink([requestId, &value](Notification* notification) { notification->GetMixedArrayCompleted(requestId, value); }); }
+    void ES1BenchmarkAsyncImplementation::NotifyGetNestedObjects(uint32_t requestId, const std::vector<NestedObject>& value)
+    { NotifySink([requestId, &value](Notification* notification) { notification->GetNestedObjectsCompleted(requestId, value); }); }
 
 } // namespace Plugin
 } // namespace WPEFramework

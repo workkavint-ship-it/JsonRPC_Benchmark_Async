@@ -273,6 +273,22 @@ struct TestCase {
     long targetBytes;
 };
 
+// Splices a "requestId" field into a pre-built JSON params object, e.g.
+// "{\"value\":1}" -> "{\"requestId\":7,\"value\":1}", or "{}" -> "{\"requestId\":7}".
+std::string InjectRequestId(const std::string& parameters, uint64_t requestId)
+{
+    const std::string field = "\"requestId\":" + std::to_string(requestId);
+    const std::string trimmed = Trim(parameters);
+    if (trimmed.size() < 2 || trimmed.front() != '{' || trimmed.back() != '}') {
+        return parameters;
+    }
+    const std::string body = Trim(trimmed.substr(1, trimmed.size() - 2));
+    if (body.empty()) {
+        return "{" + field + "}";
+    }
+    return "{" + field + "," + body + "}";
+}
+
 class AsyncClient {
 public:
     explicit AsyncClient(const Config& config)
@@ -292,12 +308,17 @@ public:
         std::ostringstream request;
         request << "{\"jsonrpc\":\"2.0\",\"id\":" << requestId
                 << ",\"method\":\"ES1BenchmarkAsync.1." << test.method
-                << "\",\"params\":" << test.params << "}";
+                << "\",\"params\":" << InjectRequestId(test.params, requestId) << "}";
         if (requestLog != nullptr) *requestLog = request.str();
         const auto start = std::chrono::steady_clock::now();
         if (!_socket.SendText(request.str())) return false;
         const std::string ack = "\"id\":" + std::to_string(requestId) + ",";
-        const std::string completion = "\"method\":\"" + _clientId + "." + event + "@" + _clientId + "\"";
+        // Event name alone only narrows to "this channel, this event" - every
+        // client registered for the same event still receives every
+        // completion of it. The requestId marker confirms this completion
+        // actually belongs to this call, not a different concurrent client's.
+        const std::string completion = "\"method\":\"" + _clientId + "." + event + "\"";
+        const std::string requestIdMarker = "\"requestId\":" + std::to_string(requestId);
         bool acknowledged = false;
         std::string message;
         while (!acknowledged) {
@@ -307,7 +328,8 @@ public:
                 acknowledged = true;
             }
         }
-        while (message.find(completion) == std::string::npos) {
+        while (message.find(completion) == std::string::npos
+               || message.find(requestIdMarker) == std::string::npos) {
             if (!_socket.Receive(&message)) return false;
         }
         if (responseLog != nullptr) *responseLog = message;

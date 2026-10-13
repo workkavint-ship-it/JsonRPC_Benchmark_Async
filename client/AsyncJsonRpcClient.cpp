@@ -313,6 +313,24 @@ private:
     int _socket = -1;
 };
 
+// Splices a "requestId" field into a pre-built JSON params object, e.g.
+// "{\"value\":1}" -> "{\"requestId\":7,\"value\":1}", or "{}" -> "{\"requestId\":7}".
+// Assumes params is always a plain top-level JSON object (true for every
+// test case this client builds), so no general JSON parsing is needed.
+std::string InjectRequestId(const std::string& parameters, uint64_t requestId)
+{
+    const std::string field = "\"requestId\":" + std::to_string(requestId);
+    const std::string trimmed = Trim(parameters);
+    if (trimmed.size() < 2 || trimmed.front() != '{' || trimmed.back() != '}') {
+        return parameters;
+    }
+    const std::string body = Trim(trimmed.substr(1, trimmed.size() - 2));
+    if (body.empty()) {
+        return "{" + field + "}";
+    }
+    return "{" + field + "," + body + "}";
+}
+
 class AsyncClient {
 public:
     AsyncClient()
@@ -335,13 +353,20 @@ public:
         std::ostringstream request;
         request << "{\"jsonrpc\":\"2.0\",\"id\":" << requestId
                 << ",\"method\":\"ES1BenchmarkAsync.1." << method
-        << "\",\"params\":" << parameters << "}";
+        << "\",\"params\":" << InjectRequestId(parameters, requestId) << "}";
 
         const uint64_t start = NowUs();
         if (!_socket.SendText(request.str())) return false;
 
         const std::string ackMarker = "\"id\":" + std::to_string(requestId) + ",";
-        const std::string completionMarker = "\"method\":\"" + clientId + "." + event + "@" + clientId + "\"";
+        // The event name narrows a received notification down to "this
+        // channel, this event" - but every client registered for the same
+        // event still receives every completion of that event (Thunder
+        // personalizes only the id-prefix per recipient, not the payload).
+        // The requestId marker is what actually confirms this specific
+        // completion belongs to this specific call, not some other client's.
+        const std::string completionMarker = "\"method\":\"" + clientId + "." + event + "\"";
+        const std::string requestIdMarker = "\"requestId\":" + std::to_string(requestId);
         bool acknowledgement = false;
         bool completion = false;
         std::string message;
@@ -352,7 +377,10 @@ public:
                 acknowledgement = true;
                 continue;
             }
-            if (message.find(completionMarker) != std::string::npos) completion = true;
+            if (message.find(completionMarker) != std::string::npos
+                && message.find(requestIdMarker) != std::string::npos) {
+                completion = true;
+            }
         }
         *elapsedUs = NowUs() - start;
 

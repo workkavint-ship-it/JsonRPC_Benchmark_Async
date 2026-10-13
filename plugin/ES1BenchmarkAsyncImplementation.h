@@ -6,7 +6,6 @@
 
 #include <deque>
 #include <functional>
-#include <map>
 #include <mutex>
 
 namespace WPEFramework {
@@ -26,31 +25,31 @@ namespace Plugin {
             INTERFACE_ENTRY(Exchange::IES1BenchmarkAsync)
         END_INTERFACE_MAP
 
-        Core::hresult Register(Notification* const notification, const Core::OptionalType<string>& clientId) override;
-        Core::hresult Unregister(const Notification* notification, const Core::OptionalType<string>& clientId) override;
+        Core::hresult Register(Notification* const notification) override;
+        Core::hresult Unregister(const Notification* notification) override;
 
-        Core::hresult SetString(const string& value) override;
-        Core::hresult GetString(const uint32_t size) override;
-        Core::hresult SetArray(const std::vector<uint8_t>& value) override;
-        Core::hresult GetArray(const uint32_t size) override;
-        Core::hresult SetMixedArray(const std::vector<MixedElement>& value) override;
-        Core::hresult GetMixedArray(const uint32_t count) override;
-        Core::hresult SetNestedObjects(const std::vector<NestedObject>& value) override;
-        Core::hresult GetNestedObjects(const uint32_t count) override;
-        Core::hresult SetUint32(const uint32_t value) override;
-        Core::hresult GetUint32() override;
-        Core::hresult SetUint64(const uint64_t value) override;
-        Core::hresult GetUint64() override;
-        Core::hresult SetBool(const bool value) override;
-        Core::hresult GetBool() override;
-        Core::hresult SetFloat(const float value) override;
-        Core::hresult GetFloat() override;
-        Core::hresult SetDouble(const double value) override;
-        Core::hresult GetDouble() override;
-        Core::hresult MeasureCopyCost(const uint32_t size) override;
-        Core::hresult MeasureStringResizeCost(const uint32_t size) override;
-        Core::hresult MeasureMixedAssignCost(const uint32_t count) override;
-        Core::hresult MeasureNestedAssignCost(const uint32_t count) override;
+        Core::hresult SetString(const uint32_t requestId, const string& value) override;
+        Core::hresult GetString(const uint32_t requestId, const uint32_t size) override;
+        Core::hresult SetArray(const uint32_t requestId, const std::vector<uint8_t>& value) override;
+        Core::hresult GetArray(const uint32_t requestId, const uint32_t size) override;
+        Core::hresult SetMixedArray(const uint32_t requestId, const std::vector<MixedElement>& value) override;
+        Core::hresult GetMixedArray(const uint32_t requestId, const uint32_t count) override;
+        Core::hresult SetNestedObjects(const uint32_t requestId, const std::vector<NestedObject>& value) override;
+        Core::hresult GetNestedObjects(const uint32_t requestId, const uint32_t count) override;
+        Core::hresult SetUint32(const uint32_t requestId, const uint32_t value) override;
+        Core::hresult GetUint32(const uint32_t requestId) override;
+        Core::hresult SetUint64(const uint32_t requestId, const uint64_t value) override;
+        Core::hresult GetUint64(const uint32_t requestId) override;
+        Core::hresult SetBool(const uint32_t requestId, const bool value) override;
+        Core::hresult GetBool(const uint32_t requestId) override;
+        Core::hresult SetFloat(const uint32_t requestId, const float value) override;
+        Core::hresult GetFloat(const uint32_t requestId) override;
+        Core::hresult SetDouble(const uint32_t requestId, const double value) override;
+        Core::hresult GetDouble(const uint32_t requestId) override;
+        Core::hresult MeasureCopyCost(const uint32_t requestId, const uint32_t size) override;
+        Core::hresult MeasureStringResizeCost(const uint32_t requestId, const uint32_t size) override;
+        Core::hresult MeasureMixedAssignCost(const uint32_t requestId, const uint32_t count) override;
+        Core::hresult MeasureNestedAssignCost(const uint32_t requestId, const uint32_t count) override;
 
     private:
         using Job = std::function<void()>;
@@ -76,45 +75,45 @@ namespace Plugin {
         template <typename ACTION>
         void NotifySink(const ACTION& action)
         {
-            std::vector<std::pair<string, Notification*>> notifications;
+            Notification* notification = nullptr;
             _adminLock.Lock();
-            for (const auto& entry : _notifications) {
-                entry.second->AddRef();
-                notifications.emplace_back(entry.first, entry.second);
+            if (_notification != nullptr) {
+                notification = _notification;
+                notification->AddRef();
             }
             _adminLock.Unlock();
 
-            for (const auto& entry : notifications) {
-                action(entry.first, entry.second);
-                entry.second->Release();
+            if (notification != nullptr) {
+                action(notification);
+                notification->Release();
             }
         }
 
-        void NotifySetString(bool success);
-        void NotifyGetString(const string& value);
-        void NotifySetArray(bool success);
-        void NotifyGetArray(const std::vector<uint8_t>& value);
-        void NotifySetMixedArray(bool success);
-        void NotifyGetMixedArray(const std::vector<MixedElement>& value);
-        void NotifySetNestedObjects(bool success);
-        void NotifyGetNestedObjects(const std::vector<NestedObject>& value);
-        void NotifySetUint32(bool success);
-        void NotifyGetUint32(uint32_t value);
-        void NotifySetUint64(bool success);
-        void NotifyGetUint64(uint64_t value);
-        void NotifySetBool(bool success);
-        void NotifyGetBool(bool value);
-        void NotifySetFloat(bool success);
-        void NotifyGetFloat(float value);
-        void NotifySetDouble(bool success);
-        void NotifyGetDouble(double value);
-        void NotifyMeasureCopyCost(uint64_t microseconds);
-        void NotifyMeasureStringResizeCost(uint64_t microseconds);
-        void NotifyMeasureMixedAssignCost(uint64_t microseconds);
-        void NotifyMeasureNestedAssignCost(uint64_t microseconds);
+        void NotifySetString(uint32_t requestId, bool success);
+        void NotifyGetString(uint32_t requestId, const string& value);
+        void NotifySetArray(uint32_t requestId, bool success);
+        void NotifyGetArray(uint32_t requestId, const std::vector<uint8_t>& value);
+        void NotifySetMixedArray(uint32_t requestId, bool success);
+        void NotifyGetMixedArray(uint32_t requestId, const std::vector<MixedElement>& value);
+        void NotifySetNestedObjects(uint32_t requestId, bool success);
+        void NotifyGetNestedObjects(uint32_t requestId, const std::vector<NestedObject>& value);
+        void NotifySetUint32(uint32_t requestId, bool success);
+        void NotifyGetUint32(uint32_t requestId, uint32_t value);
+        void NotifySetUint64(uint32_t requestId, bool success);
+        void NotifyGetUint64(uint32_t requestId, uint64_t value);
+        void NotifySetBool(uint32_t requestId, bool success);
+        void NotifyGetBool(uint32_t requestId, bool value);
+        void NotifySetFloat(uint32_t requestId, bool success);
+        void NotifyGetFloat(uint32_t requestId, float value);
+        void NotifySetDouble(uint32_t requestId, bool success);
+        void NotifyGetDouble(uint32_t requestId, double value);
+        void NotifyMeasureCopyCost(uint32_t requestId, uint64_t microseconds);
+        void NotifyMeasureStringResizeCost(uint32_t requestId, uint64_t microseconds);
+        void NotifyMeasureMixedAssignCost(uint32_t requestId, uint64_t microseconds);
+        void NotifyMeasureNestedAssignCost(uint32_t requestId, uint64_t microseconds);
 
         Core::CriticalSection _adminLock;
-        std::map<string, Notification*> _notifications;
+        Notification* _notification;
         AsyncQueue _queue;
     };
 
