@@ -313,16 +313,14 @@ private:
     int _socket = -1;
 };
 
-// Splices a "requestId" field into a pre-built JSON params object, e.g.
-// "{\"value\":1}" -> "{\"requestid\":7,\"value\":1}", or "{}" -> "{\"requestid\":7}".
-// Assumes params is always a plain top-level JSON object (true for every
-// test case this client builds), so no general JSON parsing is needed.
-std::string InjectRequestId(const std::string& parameters, uint64_t requestId)
+// Splices a "clientid" field into a pre-built JSON params object, e.g.
+// "{\"value\":1}" -> "{\"clientid\":\"es1-client-1-1\",\"value\":1}", or
+// "{}" -> "{\"clientid\":\"es1-client-1-1\"}". Assumes params is always a
+// plain top-level JSON object (true for every test case this client
+// builds), so no general JSON parsing is needed.
+std::string InjectClientId(const std::string& parameters, const std::string& clientId)
 {
-    // JsonGenerator's default (LEGACY) case convention lowercases parameter
-    // names in the generated JSON-RPC wire schema, so the C++ parameter
-    // "requestId" actually travels on the wire as "requestid".
-    const std::string field = "\"requestid\":" + std::to_string(requestId);
+    const std::string field = "\"clientid\":\"" + clientId + "\"";
     const std::string trimmed = Trim(parameters);
     if (trimmed.size() < 2 || trimmed.front() != '{' || trimmed.back() != '}') {
         return parameters;
@@ -356,20 +354,17 @@ public:
         std::ostringstream request;
         request << "{\"jsonrpc\":\"2.0\",\"id\":" << requestId
                 << ",\"method\":\"ES1BenchmarkAsync.1." << method
-        << "\",\"params\":" << InjectRequestId(parameters, requestId) << "}";
+        << "\",\"params\":" << InjectClientId(parameters, clientId) << "}";
 
         const uint64_t start = NowUs();
         if (!_socket.SendText(request.str())) return false;
 
         const std::string ackMarker = "\"id\":" + std::to_string(requestId) + ",";
-        // The event name narrows a received notification down to "this
-        // channel, this event" - but every client registered for the same
-        // event still receives every completion of that event (Thunder
-        // personalizes only the id-prefix per recipient, not the payload).
-        // The requestId marker is what actually confirms this specific
-        // completion belongs to this specific call, not some other client's.
-        const std::string completionMarker = "\"method\":\"" + clientId + "." + event + "\"";
-        const std::string requestIdMarker = "\"requestid\":" + std::to_string(requestId);
+        // Registered with register@<clientId>, so the @index mechanism on
+        // the server guarantees this channel only ever receives completions
+        // fired with this exact clientid - the designator match below is
+        // sufficient on its own, no extra per-call correlation needed.
+        const std::string completionMarker = "\"method\":\"" + clientId + "." + event + "@" + clientId + "\"";
         bool acknowledgement = false;
         bool completion = false;
         std::string message;
@@ -380,8 +375,7 @@ public:
                 acknowledgement = true;
                 continue;
             }
-            if (message.find(completionMarker) != std::string::npos
-                && message.find(requestIdMarker) != std::string::npos) {
+            if (message.find(completionMarker) != std::string::npos) {
                 completion = true;
             }
         }

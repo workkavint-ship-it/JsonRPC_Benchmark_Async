@@ -273,14 +273,12 @@ struct TestCase {
     long targetBytes;
 };
 
-// Splices a "requestId" field into a pre-built JSON params object, e.g.
-// "{\"value\":1}" -> "{\"requestid\":7,\"value\":1}", or "{}" -> "{\"requestid\":7}".
-std::string InjectRequestId(const std::string& parameters, uint64_t requestId)
+// Splices a "clientid" field into a pre-built JSON params object, e.g.
+// "{\"value\":1}" -> "{\"clientid\":\"es1-load-1-1\",\"value\":1}", or
+// "{}" -> "{\"clientid\":\"es1-load-1-1\"}".
+std::string InjectClientId(const std::string& parameters, const std::string& clientId)
 {
-    // JsonGenerator's default (LEGACY) case convention lowercases parameter
-    // names in the generated JSON-RPC wire schema, so the C++ parameter
-    // "requestId" actually travels on the wire as "requestid".
-    const std::string field = "\"requestid\":" + std::to_string(requestId);
+    const std::string field = "\"clientid\":\"" + clientId + "\"";
     const std::string trimmed = Trim(parameters);
     if (trimmed.size() < 2 || trimmed.front() != '{' || trimmed.back() != '}') {
         return parameters;
@@ -314,7 +312,7 @@ public:
         std::ostringstream request;
         request << "{\"jsonrpc\":\"2.0\",\"id\":" << requestId
                 << ",\"method\":\"ES1BenchmarkAsync.1." << test.method
-                << "\",\"params\":" << InjectRequestId(test.params, requestId) << "}";
+                << "\",\"params\":" << InjectClientId(test.params, _clientId) << "}";
         if (requestLog != nullptr) *requestLog = request.str();
         LogRequest(request.str());
         const auto start = std::chrono::steady_clock::now();
@@ -323,12 +321,11 @@ public:
             return false;
         }
         const std::string ack = "\"id\":" + std::to_string(requestId) + ",";
-        // Event name alone only narrows to "this channel, this event" - every
-        // client registered for the same event still receives every
-        // completion of it. The requestId marker confirms this completion
-        // actually belongs to this call, not a different concurrent client's.
-        const std::string completion = "\"method\":\"" + _clientId + "." + event + "\"";
-        const std::string requestIdMarker = "\"requestid\":" + std::to_string(requestId);
+        // Registered with register@<clientId>, so the @index mechanism on
+        // the server guarantees this channel only ever receives completions
+        // fired with this exact clientid - this designator match is
+        // sufficient on its own, no extra per-call correlation needed.
+        const std::string completion = "\"method\":\"" + _clientId + "." + event + "@" + _clientId + "\"";
         bool acknowledged = false;
         std::string message;
         while (!acknowledged) {
@@ -347,12 +344,10 @@ public:
             }
         }
         LogResponse("ack", message);
-        while (message.find(completion) == std::string::npos
-               || message.find(requestIdMarker) == std::string::npos) {
+        while (message.find(completion) == std::string::npos) {
             if (!_socket.Receive(&message)) {
                 Log("socket closed/timed out waiting for completion method=" + test.method
                     + " requestId=" + std::to_string(requestId) + " expected marker=" + completion
-                    + " expected requestIdMarker=" + requestIdMarker
                     + " - last message seen: " + Truncate(message));
                 return false;
             }
