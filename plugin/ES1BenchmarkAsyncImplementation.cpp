@@ -120,7 +120,7 @@ namespace Plugin {
 
     ES1BenchmarkAsyncImplementation::ES1BenchmarkAsyncImplementation()
         : _adminLock()
-        , _notification(nullptr)
+        , _notifications()
         , _queue(*this)
     {
     }
@@ -128,38 +128,42 @@ namespace Plugin {
     ES1BenchmarkAsyncImplementation::~ES1BenchmarkAsyncImplementation()
     {
         _queue.Cancel();
-        Notification* notification = nullptr;
+        std::vector<Notification*> notifications;
         _adminLock.Lock();
-        notification = _notification;
-        _notification = nullptr;
+        for (const auto& entry : _notifications) notifications.push_back(entry.second);
+        _notifications.clear();
         _adminLock.Unlock();
-        if (notification != nullptr) notification->Release();
+        for (Notification* notification : notifications) notification->Release();
     }
 
     SERVICE_REGISTRATION(ES1BenchmarkAsyncImplementation, 1, 0);
 
-    Core::hresult ES1BenchmarkAsyncImplementation::Register(Notification* const notification)
+    Core::hresult ES1BenchmarkAsyncImplementation::Register(Notification* const notification, const Core::OptionalType<string>& clientId)
     {
         if (notification == nullptr) return Core::ERROR_BAD_REQUEST;
+        const string id = clientId.IsSet() ? clientId.Value() : string();
         _adminLock.Lock();
-        if (_notification != nullptr) {
-            const bool same = (_notification == notification);
+        auto index = _notifications.find(id);
+        if (index != _notifications.end()) {
+            const bool same = (index->second == notification);
             _adminLock.Unlock();
             return same ? Core::ERROR_NONE : Core::ERROR_ALREADY_CONNECTED;
         }
         notification->AddRef();
-        _notification = notification;
+        _notifications.emplace(id, notification);
         _adminLock.Unlock();
         return Core::ERROR_NONE;
     }
 
-    Core::hresult ES1BenchmarkAsyncImplementation::Unregister(const Notification* notification)
+    Core::hresult ES1BenchmarkAsyncImplementation::Unregister(const Notification* notification, const Core::OptionalType<string>& clientId)
     {
         Notification* registered = nullptr;
+        const string id = clientId.IsSet() ? clientId.Value() : string();
         _adminLock.Lock();
-        if (_notification == notification) {
-            registered = _notification;
-            _notification = nullptr;
+        auto index = _notifications.find(id);
+        if (index != _notifications.end() && index->second == notification) {
+            registered = index->second;
+            _notifications.erase(index);
         }
         _adminLock.Unlock();
         if (registered == nullptr) return Core::ERROR_UNKNOWN_KEY;
@@ -267,7 +271,7 @@ namespace Plugin {
 #define NOTIFY_BOOL(name) \
     void ES1BenchmarkAsyncImplementation::Notify##name(const bool value) \
     { \
-        NotifySink([value](Notification* notification) { notification->name##Completed(value); }); \
+        NotifySink([value](const string& clientId, Notification* notification) { notification->name##Completed(clientId, value); }); \
     }
 
     NOTIFY_BOOL(SetString)
@@ -285,7 +289,7 @@ namespace Plugin {
 #define NOTIFY_VALUE(name, type) \
     void ES1BenchmarkAsyncImplementation::Notify##name(const type value) \
     { \
-        NotifySink([value](Notification* notification) { notification->name##Completed(value); }); \
+        NotifySink([value](const string& clientId, Notification* notification) { notification->name##Completed(clientId, value); }); \
     }
 
     NOTIFY_VALUE(GetUint32, uint32_t)
@@ -301,13 +305,13 @@ namespace Plugin {
 #undef NOTIFY_VALUE
 
     void ES1BenchmarkAsyncImplementation::NotifyGetString(const string& value)
-    { NotifySink([&value](Notification* notification) { notification->GetStringCompleted(value); }); }
+    { NotifySink([&value](const string& clientId, Notification* notification) { notification->GetStringCompleted(clientId, value); }); }
     void ES1BenchmarkAsyncImplementation::NotifyGetArray(const std::vector<uint8_t>& value)
-    { NotifySink([&value](Notification* notification) { notification->GetArrayCompleted(value); }); }
+    { NotifySink([&value](const string& clientId, Notification* notification) { notification->GetArrayCompleted(clientId, value); }); }
     void ES1BenchmarkAsyncImplementation::NotifyGetMixedArray(const std::vector<MixedElement>& value)
-    { NotifySink([&value](Notification* notification) { notification->GetMixedArrayCompleted(value); }); }
+    { NotifySink([&value](const string& clientId, Notification* notification) { notification->GetMixedArrayCompleted(clientId, value); }); }
     void ES1BenchmarkAsyncImplementation::NotifyGetNestedObjects(const std::vector<NestedObject>& value)
-    { NotifySink([&value](Notification* notification) { notification->GetNestedObjectsCompleted(value); }); }
+    { NotifySink([&value](const string& clientId, Notification* notification) { notification->GetNestedObjectsCompleted(clientId, value); }); }
 
 } // namespace Plugin
 } // namespace WPEFramework

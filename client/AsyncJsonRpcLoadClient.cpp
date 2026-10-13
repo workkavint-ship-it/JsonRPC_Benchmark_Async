@@ -297,7 +297,7 @@ public:
         const auto start = std::chrono::steady_clock::now();
         if (!_socket.SendText(request.str())) return false;
         const std::string ack = "\"id\":" + std::to_string(requestId) + ",";
-        const std::string completion = "\"method\":\"" + _clientId + "." + event + "\"";
+        const std::string completion = "\"method\":\"" + _clientId + "." + event + "@" + _clientId + "\"";
         bool acknowledged = false;
         std::string message;
         while (!acknowledged) {

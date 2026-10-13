@@ -6,6 +6,7 @@
 
 #include <deque>
 #include <functional>
+#include <map>
 #include <mutex>
 
 namespace WPEFramework {
@@ -25,8 +26,8 @@ namespace Plugin {
             INTERFACE_ENTRY(Exchange::IES1BenchmarkAsync)
         END_INTERFACE_MAP
 
-        Core::hresult Register(Notification* const notification) override;
-        Core::hresult Unregister(const Notification* notification) override;
+        Core::hresult Register(Notification* const notification, const Core::OptionalType<string>& clientId) override;
+        Core::hresult Unregister(const Notification* notification, const Core::OptionalType<string>& clientId) override;
 
         Core::hresult SetString(const string& value) override;
         Core::hresult GetString(const uint32_t size) override;
@@ -75,17 +76,17 @@ namespace Plugin {
         template <typename ACTION>
         void NotifySink(const ACTION& action)
         {
-            Notification* notification = nullptr;
+            std::vector<std::pair<string, Notification*>> notifications;
             _adminLock.Lock();
-            if (_notification != nullptr) {
-                notification = _notification;
-                notification->AddRef();
+            for (const auto& entry : _notifications) {
+                entry.second->AddRef();
+                notifications.emplace_back(entry.first, entry.second);
             }
             _adminLock.Unlock();
 
-            if (notification != nullptr) {
-                action(notification);
-                notification->Release();
+            for (const auto& entry : notifications) {
+                action(entry.first, entry.second);
+                entry.second->Release();
             }
         }
 
@@ -113,7 +114,7 @@ namespace Plugin {
         void NotifyMeasureNestedAssignCost(uint64_t microseconds);
 
         Core::CriticalSection _adminLock;
-        Notification* _notification;
+        std::map<string, Notification*> _notifications;
         AsyncQueue _queue;
     };
 
