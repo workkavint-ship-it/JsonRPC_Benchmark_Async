@@ -138,7 +138,7 @@ namespace Plugin {
 
     SERVICE_REGISTRATION(ES1BenchmarkAsyncImplementation, 1, 0);
 
-    Core::hresult ES1BenchmarkAsyncImplementation::Register(Notification* const notification, const Core::OptionalType<string>& /* clientid */)
+    Core::hresult ES1BenchmarkAsyncImplementation::Register(Notification* const notification)
     {
         if (notification == nullptr) return Core::ERROR_BAD_REQUEST;
         _adminLock.Lock();
@@ -153,7 +153,7 @@ namespace Plugin {
         return Core::ERROR_NONE;
     }
 
-    Core::hresult ES1BenchmarkAsyncImplementation::Unregister(const Notification* notification, const Core::OptionalType<string>& /* clientid */)
+    Core::hresult ES1BenchmarkAsyncImplementation::Unregister(const Notification* notification)
     {
         Notification* registered = nullptr;
         _adminLock.Lock();

@@ -25,14 +25,15 @@ namespace Plugin {
             INTERFACE_ENTRY(Exchange::IES1BenchmarkAsync)
         END_INTERFACE_MAP
 
-        // The clientid index only matters to Thunder's own JSON-RPC event
-        // dispatch (it is what lets a channel register@<clientid> and only
-        // ever receive that client's own notifications). The native sink
-        // registered here is always the single internal helper the generated
-        // J<interface>.h installs on behalf of the plugin shell, listening
-        // for every value - so it is accepted but not used to key storage.
-        Core::hresult Register(Notification* const notification, const Core::OptionalType<string>& clientid) override;
-        Core::hresult Unregister(const Notification* notification, const Core::OptionalType<string>& clientid) override;
+        // @index lives only on the notification's clientid parameter (not
+        // on Register/Unregister - that placement is optional per Thunder's
+        // own docs, and the plain single-sink form here is the one already
+        // proven to work). The clientid-based filtering that makes each
+        // channel only ever receive its own notifications happens entirely
+        // in Thunder's generated JSON-RPC event dispatch, driven by each
+        // client's register@<clientid> call - not by this native Register.
+        Core::hresult Register(Notification* const notification) override;
+        Core::hresult Unregister(const Notification* notification) override;
 
         Core::hresult SetString(const string& clientid, const string& value) override;
         Core::hresult GetString(const string& clientid, const uint32_t size) override;
