@@ -4,9 +4,8 @@
 
 #include <interfaces/IES1BenchmarkAsync.h>
 
-#include <deque>
 #include <functional>
-#include <mutex>
+#include <vector>
 
 namespace WPEFramework {
 namespace Plugin {
@@ -59,25 +58,48 @@ namespace Plugin {
         Core::hresult MeasureNestedAssignCost(const string& clientid, const uint32_t count) override;
 
     private:
-        using Job = std::function<void()>;
-
-        class AsyncQueue : private Core::WorkerPool::JobType<AsyncQueue&> {
+        // Each call gets its own independent, disposable job scheduled
+        // directly on Thunder's shared worker pool, rather than being
+        // funneled through a single reusable Core::WorkerPool::JobType<>
+        // slot. A single JobType<> instance holds exactly one state
+        // (IDLE/SUBMITTED/EXECUTING/...) at a time, so it can only ever
+        // represent one pending/in-flight job - that serialized every
+        // caller through one shared delay, meaning N concurrent callers
+        // never actually got N independent delays, just one delay for the
+        // whole batch. Scheduling each call's own CallJob independently
+        // lets up to N calls each genuinely wait out their own delay
+        // concurrently, bounded only by the worker pool's own thread count.
+        class CallJob : public Core::IDispatch {
         public:
-            explicit AsyncQueue(ES1BenchmarkAsyncImplementation& parent);
-            ~AsyncQueue();
+            CallJob(ES1BenchmarkAsyncImplementation& parent, std::function<void()>&& work)
+                : _parent(parent)
+                , _work(std::move(work))
+            {
+            }
+            CallJob(const CallJob&) = delete;
+            CallJob& operator=(const CallJob&) = delete;
+            ~CallJob() override = default;
 
-            void Submit(const Job& job);
-            void Cancel();
+            void Dispatch() override
+            {
+                if (_work) {
+                    _work();
+                }
+                _parent.UntrackJob(this);
+            }
 
         private:
-            friend class Core::ThreadPool::JobType<AsyncQueue&>;
-            void Dispatch();
-
             ES1BenchmarkAsyncImplementation& _parent;
-            std::mutex _lock;
-            std::deque<Job> _jobs;
-            bool _scheduled;
+            std::function<void()> _work;
         };
+
+        // Schedules work to run after the fixed heavy-work delay, as its
+        // own independent job (see CallJob above).
+        void SubmitDelayed(std::function<void()>&& work);
+        // Called by a CallJob once it has run, to drop it from
+        // _pendingJobs - keeps that list bounded to jobs that are still
+        // actually outstanding, not ones that already completed.
+        void UntrackJob(const Core::IDispatch* job);
 
         template <typename ACTION>
         void NotifySink(const ACTION& action)
@@ -121,7 +143,8 @@ namespace Plugin {
 
         Core::CriticalSection _adminLock;
         Notification* _notification;
-        AsyncQueue _queue;
+        Core::CriticalSection _jobsLock;
+        std::vector<Core::ProxyType<Core::IDispatch>> _pendingJobs;
     };
 
 } // namespace Plugin
