@@ -4,7 +4,9 @@
 
 #include <interfaces/IES1BenchmarkAsync.h>
 
+#include <chrono>
 #include <functional>
+#include <thread>
 #include <vector>
 
 namespace WPEFramework {
@@ -58,17 +60,27 @@ namespace Plugin {
         Core::hresult MeasureNestedAssignCost(const string& clientid, const uint32_t count) override;
 
     private:
-        // Each call gets its own independent, disposable job scheduled
-        // directly on Thunder's shared worker pool, rather than being
+        // Each call gets its own independent, disposable job submitted
+        // directly to Thunder's shared worker pool, rather than being
         // funneled through a single reusable Core::WorkerPool::JobType<>
         // slot. A single JobType<> instance holds exactly one state
         // (IDLE/SUBMITTED/EXECUTING/...) at a time, so it can only ever
         // represent one pending/in-flight job - that serialized every
         // caller through one shared delay, meaning N concurrent callers
         // never actually got N independent delays, just one delay for the
-        // whole batch. Scheduling each call's own CallJob independently
+        // whole batch. Submitting each call's own CallJob independently
         // lets up to N calls each genuinely wait out their own delay
         // concurrently, bounded only by the worker pool's own thread count.
+        //
+        // The delay itself is a real sleep_for() inside Dispatch(), not a
+        // Schedule(Now + delay, job) call - Schedule() hands the job to
+        // Thunder's own internal timer thread, which only releases it into
+        // the thread pool once the deadline arrives; Submit() instead hands
+        // the job straight to a worker thread immediately, which then just
+        // blocks for the delay itself. That avoids going through the
+        // timer thread altogether - each call occupies its own worker
+        // thread for the duration of the delay instead of all of them
+        // funneling through one shared timer.
         class CallJob : public Core::IDispatch {
         public:
             CallJob(ES1BenchmarkAsyncImplementation& parent, std::function<void()>&& work)
@@ -82,6 +94,7 @@ namespace Plugin {
 
             void Dispatch() override
             {
+                std::this_thread::sleep_for(std::chrono::seconds(5));
                 if (_work) {
                     _work();
                 }
@@ -93,8 +106,9 @@ namespace Plugin {
             std::function<void()> _work;
         };
 
-        // Schedules work to run after the fixed heavy-work delay, as its
-        // own independent job (see CallJob above).
+        // Submits work to run immediately on the worker pool - the fixed
+        // heavy-work delay happens inside CallJob::Dispatch() itself, as
+        // its own independent job (see CallJob above).
         void SubmitDelayed(std::function<void()>&& work);
         // Called by a CallJob once it has run, to drop it from
         // _pendingJobs - keeps that list bounded to jobs that are still

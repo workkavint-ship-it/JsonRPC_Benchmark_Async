@@ -69,7 +69,10 @@ namespace Plugin {
         _pendingJobs.push_back(job);
         _jobsLock.Unlock();
 
-        Core::IWorkerPool::Instance().Schedule(Core::Time::Now().Add(5000), job);
+        // Submit(), not Schedule() - handed straight to a worker thread
+        // now; the 5s delay happens inside CallJob::Dispatch() itself via
+        // sleep_for(), not via Thunder's internal timer thread.
+        Core::IWorkerPool::Instance().Submit(job);
     }
 
     void ES1BenchmarkAsyncImplementation::UntrackJob(const Core::IDispatch* job)
