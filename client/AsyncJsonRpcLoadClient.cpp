@@ -330,7 +330,7 @@ public:
         std::string message;
         while (!acknowledged) {
             if (!_socket.Receive(&message)) {
-                Log("socket closed/timed out waiting for ack id=" + std::to_string(requestId)
+                Log("ipc timeout waiting for ack id=" + std::to_string(requestId)
                     + " method=" + test.method + " - last message seen: " + Truncate(message));
                 return false;
             }
@@ -346,7 +346,7 @@ public:
         LogResponse("ack", message);
         while (message.find(completion) == std::string::npos) {
             if (!_socket.Receive(&message)) {
-                Log("socket closed/timed out waiting for completion method=" + test.method
+                Log("ipc timeout waiting for notification method=" + test.method
                     + " requestId=" + std::to_string(requestId) + " expected marker=" + completion
                     + " - last message seen: " + Truncate(message));
                 return false;
@@ -401,7 +401,7 @@ private:
         std::string response;
         for (;;) {
             if (!_socket.Receive(&response)) {
-                Log("socket closed/timed out waiting for register/unregister ack id=" + std::to_string(id)
+                Log("ipc timeout waiting for register/unregister ack id=" + std::to_string(id)
                     + " - last message seen: " + Truncate(response));
                 return false;
             }
