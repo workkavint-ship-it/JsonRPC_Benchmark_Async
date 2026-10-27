@@ -26,6 +26,13 @@
 namespace {
 
 std::atomic<uint64_t> g_clientSequence { 0 };
+std::mutex g_logMutex;
+
+void LogLine(const std::string& line)
+{
+    std::lock_guard<std::mutex> lock(g_logMutex);
+    std::cerr << line << std::endl;
+}
 
 std::string Trim(const std::string& value)
 {
@@ -292,8 +299,9 @@ std::string InjectClientId(const std::string& parameters, const std::string& cli
 
 class AsyncClient {
 public:
-    explicit AsyncClient(const Config& config)
+    AsyncClient(const Config& config, int displayIndex)
         : _config(config)
+        , _displayIndex(displayIndex)
         , _clientId("es1-load-" + std::to_string(static_cast<unsigned long long>(::getpid()))
             + "-" + std::to_string(++g_clientSequence))
     {
@@ -305,7 +313,7 @@ public:
     {
         const std::string event = test.method + "completed";
         if (!Register(event)) {
-            Log("register failed for event=" + event + " clientId=" + _clientId);
+            Log("register failed for event=" + event);
             return false;
         }
         const uint64_t requestId = ++_requestId;
@@ -313,10 +321,12 @@ public:
         request << "{\"jsonrpc\":\"2.0\",\"id\":" << requestId
                 << ",\"method\":\"ES1BenchmarkAsync.1." << test.method
                 << "\",\"params\":" << InjectClientId(test.params, _clientId) << "}";
-        if (requestLog != nullptr) *requestLog = request.str();
-        LogRequest(request.str());
+        const std::string requestText = request.str();
+        if (requestLog != nullptr) *requestLog = requestText;
+        LogRequest(requestText);
+        Status("sent " + test.method);
         const auto start = std::chrono::steady_clock::now();
-        if (!_socket.SendText(request.str())) {
+        if (!_socket.SendText(requestText)) {
             Log("send failed for method=" + test.method + " requestId=" + std::to_string(requestId));
             return false;
         }
@@ -344,6 +354,7 @@ public:
             }
         }
         LogResponse("ack", message);
+        Status("result null received");
         while (message.find(completion) == std::string::npos) {
             if (!_socket.Receive(&message)) {
                 Log("ipc timeout waiting for notification method=" + test.method
@@ -351,35 +362,45 @@ public:
                     + " - last message seen: " + Truncate(message));
                 return false;
             }
-            LogResponse("notification", message);
         }
+        LogResponse("notification", message);
+        Status("notification received");
         if (responseLog != nullptr) *responseLog = message;
         *elapsedMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         if (!Unregister(event)) {
-            Log("warning: unregister failed for event=" + event + " clientId=" + _clientId);
+            Log("warning: unregister failed for event=" + event);
         }
         return true;
     }
 
 private:
+    // Always surfaces (errors/timeouts are worth seeing regardless of verbosity toggles).
     void Log(const std::string& line) const
     {
-        if (_config.progressOutput || _config.logRequestResponse) {
-            std::cerr << "[" << _clientId << "] " << line << std::endl;
+        LogLine("[client " + std::to_string(_displayIndex) + "] " + line);
+    }
+
+    // Concise per-client progress line (sent / result null received / notification received).
+    void Status(const std::string& line) const
+    {
+        if (_config.progressOutput) {
+            LogLine("[client " + std::to_string(_displayIndex) + "] " + line);
         }
     }
 
+    // Raw JSON is noisy at 100 clients, so only client 0 ever prints it, once per
+    // step, as a one-time reference sample of the actual wire format.
     void LogRequest(const std::string& request) const
     {
-        if (_config.logRequestResponse) {
-            std::cerr << "[" << _clientId << "] >> " << Truncate(request) << std::endl;
+        if (_displayIndex == 0 && _config.logRequestResponse) {
+            LogLine("----- sample request (reference) -----\n" + Truncate(request));
         }
     }
 
     void LogResponse(const char* kind, const std::string& response) const
     {
-        if (_config.logRequestResponse) {
-            std::cerr << "[" << _clientId << "] << (" << kind << ") " << Truncate(response) << std::endl;
+        if (_displayIndex == 0 && _config.logRequestResponse) {
+            LogLine(std::string("----- sample ") + kind + " (reference) -----\n" + Truncate(response));
         }
     }
 
@@ -438,6 +459,7 @@ private:
     }
 
     const Config& _config;
+    int _displayIndex;
     WebSocket _socket;
     std::string _clientId;
     uint64_t _requestId = 0;
@@ -543,7 +565,7 @@ int main(int argc, char** argv)
         std::vector<std::thread> workers;
         for (int clientIndex = 0; clientIndex < config.clients; ++clientIndex) {
             workers.emplace_back([&, clientIndex] {
-                AsyncClient client(config);
+                AsyncClient client(config, clientIndex);
                 if (!client.Connect()) return;
                 double elapsed = 0;
                 for (int warmup = 0; warmup < config.warmup; ++warmup) client.Call(test, &elapsed, nullptr, nullptr);
