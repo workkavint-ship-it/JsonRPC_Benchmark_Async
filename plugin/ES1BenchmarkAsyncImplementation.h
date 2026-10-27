@@ -4,9 +4,7 @@
 
 #include <interfaces/IES1BenchmarkAsync.h>
 
-#include <chrono>
 #include <functional>
-#include <thread>
 #include <vector>
 
 namespace WPEFramework {
@@ -72,15 +70,12 @@ namespace Plugin {
         // lets up to N calls each genuinely wait out their own delay
         // concurrently, bounded only by the worker pool's own thread count.
         //
-        // The delay itself is a real sleep_for() inside Dispatch(), not a
-        // Schedule(Now + delay, job) call - Schedule() hands the job to
-        // Thunder's own internal timer thread, which only releases it into
-        // the thread pool once the deadline arrives; Submit() instead hands
-        // the job straight to a worker thread immediately, which then just
-        // blocks for the delay itself. That avoids going through the
-        // timer thread altogether - each call occupies its own worker
-        // thread for the duration of the delay instead of all of them
-        // funneling through one shared timer.
+        // The delay is applied via Schedule(Now + delay, job) - Thunder's
+        // own internal timer thread holds the job and only releases it
+        // into the thread pool once the deadline arrives. Each call's
+        // CallJob is scheduled independently, so each gets its own
+        // deadline rather than all 100 funneling through one shared
+        // batch-level delay the way the old single-slot AsyncQueue did.
         class CallJob : public Core::IDispatch {
         public:
             CallJob(ES1BenchmarkAsyncImplementation& parent, std::function<void()>&& work)
@@ -94,7 +89,6 @@ namespace Plugin {
 
             void Dispatch() override
             {
-                std::this_thread::sleep_for(std::chrono::seconds(5));
                 if (_work) {
                     _work();
                 }
@@ -106,9 +100,8 @@ namespace Plugin {
             std::function<void()> _work;
         };
 
-        // Submits work to run immediately on the worker pool - the fixed
-        // heavy-work delay happens inside CallJob::Dispatch() itself, as
-        // its own independent job (see CallJob above).
+        // Schedules work to run after the fixed heavy-work delay, as its
+        // own independent job (see CallJob above).
         void SubmitDelayed(std::function<void()>&& work);
         // Called by a CallJob once it has run, to drop it from
         // _pendingJobs - keeps that list bounded to jobs that are still
