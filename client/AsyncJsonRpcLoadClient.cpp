@@ -34,6 +34,23 @@ void LogLine(const std::string& line)
     std::cerr << line << std::endl;
 }
 
+// Tracks how many of the current test's clients have reached each milestone,
+// so we can print one "N/N clients <milestone>" line per completed round
+// instead of per-client noise.
+struct Progress {
+    std::atomic<int> sent { 0 };
+    std::atomic<int> acked { 0 };
+    std::atomic<int> notified { 0 };
+};
+
+void BumpProgress(std::atomic<int>& counter, int totalClients, const char* label)
+{
+    const int count = ++counter;
+    if (totalClients > 0 && count % totalClients == 0) {
+        LogLine("[progress] " + std::to_string(totalClients) + "/" + std::to_string(totalClients) + " clients " + label);
+    }
+}
+
 std::string Trim(const std::string& value)
 {
     const size_t first = value.find_first_not_of(" \t\r\n");
@@ -299,9 +316,10 @@ std::string InjectClientId(const std::string& parameters, const std::string& cli
 
 class AsyncClient {
 public:
-    AsyncClient(const Config& config, int displayIndex)
+    AsyncClient(const Config& config, int displayIndex, Progress& progress)
         : _config(config)
         , _displayIndex(displayIndex)
+        , _progress(progress)
         , _clientId("es1-load-" + std::to_string(static_cast<unsigned long long>(::getpid()))
             + "-" + std::to_string(++g_clientSequence))
     {
@@ -325,6 +343,7 @@ public:
         if (requestLog != nullptr) *requestLog = requestText;
         LogRequest(requestText);
         Status("sent " + test.method);
+        BumpProgress(_progress.sent, _config.clients, "sent");
         const auto start = std::chrono::steady_clock::now();
         if (!_socket.SendText(requestText)) {
             Log("send failed for method=" + test.method + " requestId=" + std::to_string(requestId));
@@ -340,7 +359,7 @@ public:
         std::string message;
         while (!acknowledged) {
             if (!_socket.Receive(&message)) {
-                Log("ipc timeout waiting for ack id=" + std::to_string(requestId)
+                Log("request timed out waiting for ack id=" + std::to_string(requestId)
                     + " method=" + test.method + " - last message seen: " + Truncate(message));
                 return false;
             }
@@ -353,11 +372,11 @@ public:
                 acknowledged = true;
             }
         }
-        LogResponse("ack", message);
         Status("result null received");
+        BumpProgress(_progress.acked, _config.clients, "received acknowledgement");
         while (message.find(completion) == std::string::npos) {
             if (!_socket.Receive(&message)) {
-                Log("ipc timeout waiting for notification method=" + test.method
+                Log("request timed out waiting for notification method=" + test.method
                     + " requestId=" + std::to_string(requestId) + " expected marker=" + completion
                     + " - last message seen: " + Truncate(message));
                 return false;
@@ -365,6 +384,7 @@ public:
         }
         LogResponse("notification", message);
         Status("notification received");
+        BumpProgress(_progress.notified, _config.clients, "received notification");
         if (responseLog != nullptr) *responseLog = message;
         *elapsedMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         if (!Unregister(event)) {
@@ -422,7 +442,7 @@ private:
         std::string response;
         for (;;) {
             if (!_socket.Receive(&response)) {
-                Log("ipc timeout waiting for register/unregister ack id=" + std::to_string(id)
+                Log("request timed out waiting for register/unregister ack id=" + std::to_string(id)
                     + " - last message seen: " + Truncate(response));
                 return false;
             }
@@ -460,6 +480,7 @@ private:
 
     const Config& _config;
     int _displayIndex;
+    Progress& _progress;
     WebSocket _socket;
     std::string _clientId;
     uint64_t _requestId = 0;
@@ -563,9 +584,10 @@ int main(int argc, char** argv)
     for (const TestCase& test : tests) {
         std::vector<std::vector<double>> samples(static_cast<size_t>(config.clients));
         std::vector<std::thread> workers;
+        Progress progress;
         for (int clientIndex = 0; clientIndex < config.clients; ++clientIndex) {
             workers.emplace_back([&, clientIndex] {
-                AsyncClient client(config, clientIndex);
+                AsyncClient client(config, clientIndex, progress);
                 if (!client.Connect()) return;
                 double elapsed = 0;
                 for (int warmup = 0; warmup < config.warmup; ++warmup) client.Call(test, &elapsed, nullptr, nullptr);
