@@ -69,10 +69,10 @@ namespace Plugin {
         _pendingJobs.push_back(job);
         _jobsLock.Unlock();
 
-        // Schedule(), not Submit() - held by Thunder's internal timer
-        // thread until this job's own 3s deadline, then released into the
-        // thread pool. Each CallJob has its own independent deadline.
-        Core::IWorkerPool::Instance().Schedule(Core::Time::Now().Add(3000), job);
+        // Submit(), not Schedule() - handed to the worker pool immediately;
+        // the 3s delay happens inside CallJob::Dispatch() itself, so it
+        // occupies a worker-pool thread for the full 3 seconds.
+        Core::IWorkerPool::Instance().Submit(job);
     }
 
     void ES1BenchmarkAsyncImplementation::UntrackJob(const Core::IDispatch* job)

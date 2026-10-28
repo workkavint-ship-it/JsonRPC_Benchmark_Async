@@ -4,7 +4,9 @@
 
 #include <interfaces/IES1BenchmarkAsync.h>
 
+#include <chrono>
 #include <functional>
+#include <thread>
 #include <vector>
 
 namespace WPEFramework {
@@ -70,12 +72,11 @@ namespace Plugin {
         // lets up to N calls each genuinely wait out their own delay
         // concurrently, bounded only by the worker pool's own thread count.
         //
-        // The delay is applied via Schedule(Now + delay, job) - Thunder's
-        // own internal timer thread holds the job and only releases it
-        // into the thread pool once the deadline arrives. Each call's
-        // CallJob is scheduled independently, so each gets its own
-        // deadline rather than all 100 funneling through one shared
-        // batch-level delay the way the old single-slot AsyncQueue did.
+        // The 3s heavy-work delay is simulated with a blocking sleep inside
+        // Dispatch() itself, so it occupies a worker-pool thread for the
+        // full 3s - jobs are handed to the pool immediately via Submit(),
+        // not parked on Thunder's internal timer. With root.threads=32,
+        // up to 32 of these can run their 3s sleep concurrently.
         class CallJob : public Core::IDispatch {
         public:
             CallJob(ES1BenchmarkAsyncImplementation& parent, std::function<void()>&& work)
@@ -89,6 +90,7 @@ namespace Plugin {
 
             void Dispatch() override
             {
+                std::this_thread::sleep_for(std::chrono::seconds(3));
                 if (_work) {
                     _work();
                 }
@@ -100,8 +102,9 @@ namespace Plugin {
             std::function<void()> _work;
         };
 
-        // Schedules work to run after the fixed heavy-work delay, as its
-        // own independent job (see CallJob above).
+        // Submits work to run immediately on the worker pool, as its own
+        // independent job (see CallJob above) - the heavy-work delay lives
+        // inside CallJob::Dispatch() itself, not in how it's scheduled.
         void SubmitDelayed(std::function<void()>&& work);
         // Called by a CallJob once it has run, to drop it from
         // _pendingJobs - keeps that list bounded to jobs that are still
