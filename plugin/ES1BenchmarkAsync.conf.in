@@ -4,7 +4,7 @@ configuration = {
 	"root": {
 		"mode": "@PLUGIN_ES1BENCHMARKASYNC_MODE@",
 		"locator": "lib@PLUGIN_IMPLEMENTATION@.so",
-		"threads": 8
+		"threads": 4
 	},
 	"notifyhost": "127.0.0.1",
 	"notifyport": 8080,
